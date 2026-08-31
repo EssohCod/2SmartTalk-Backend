@@ -97,6 +97,24 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    // 5. Groups Table (Multilingual Collaboration Groups)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS groups (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name VARCHAR(255) NOT NULL,
+        category VARCHAR(100) DEFAULT 'Engineering',
+        description TEXT,
+        avatar_url TEXT,
+        created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        created_by_email VARCHAR(255),
+        invite_link TEXT NOT NULL,
+        members JSONB DEFAULT '[]'::jsonb,
+        languages JSONB DEFAULT '[]'::jsonb,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -106,10 +124,11 @@ export async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_meetings_host ON meetings(host_email);
       CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);
       CREATE INDEX IF NOT EXISTS idx_contacts_username ON contacts(username);
+      CREATE INDEX IF NOT EXISTS idx_groups_created ON groups(created_at DESC);
     `);
 
     await client.query("COMMIT");
-    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts tables ready)");
+    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups tables ready)");
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("❌ Failed to initialize database schema:", error);

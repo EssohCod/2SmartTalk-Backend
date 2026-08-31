@@ -5,6 +5,7 @@ import meetingRoutes from "./meeting.routes";
 import translationRoutes from "./translation.routes";
 import dubbingRoutes from "./dubbing.routes";
 import contactRoutes from "./contact.routes";
+import groupRoutes from "./group.routes";
 
 const router = Router();
 
@@ -25,5 +26,8 @@ router.use("/dubbing", dubbingRoutes);
 
 // Mount contacts routes
 router.use("/contacts", contactRoutes);
+
+// Mount multilingual groups routes
+router.use("/groups", groupRoutes);
 
 export default router;
