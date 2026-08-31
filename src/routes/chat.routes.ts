@@ -15,6 +15,9 @@ router.get("/:id/messages", chatController.getMessages);
 // POST /api/chats/:id/messages - Send message with real-time translation
 router.post("/:id/messages", chatController.sendMessage);
 
+// PATCH /api/chats/:id/read - Mark conversation as read (clear unread count)
+router.patch("/:id/read", chatController.markAsRead);
+
 // DELETE /api/chats/:id - Delete conversation
 router.delete("/:id", chatController.deleteConversation);
 

@@ -407,6 +407,28 @@ export const chatController = {
       res.status(500).json({ error: "Failed to delete conversation." });
     }
   },
+
+  /**
+   * 6. Mark Conversation As Read (Clear unread counter)
+   * PATCH /api/chats/:id/read
+   */
+  async markAsRead(req: Request, res: Response): Promise<void> {
+    try {
+      const id = req.params.id as string;
+
+      if (isUuid(id)) {
+        await pool.query("UPDATE conversations SET unread_count = 0 WHERE id = $1", [id]);
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Conversation marked as read.",
+      });
+    } catch (error: any) {
+      console.error("ChatController.markAsRead error:", error);
+      res.status(500).json({ error: "Failed to mark conversation as read." });
+    }
+  },
 };
 
 export default chatController;
