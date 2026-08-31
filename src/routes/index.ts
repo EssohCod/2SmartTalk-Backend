@@ -4,6 +4,7 @@ import authRoutes from "./auth.routes";
 import meetingRoutes from "./meeting.routes";
 import translationRoutes from "./translation.routes";
 import dubbingRoutes from "./dubbing.routes";
+import contactRoutes from "./contact.routes";
 
 const router = Router();
 
@@ -21,5 +22,8 @@ router.use("/translate", translationRoutes);
 
 // Mount AI audio dubbing routes
 router.use("/dubbing", dubbingRoutes);
+
+// Mount contacts routes
+router.use("/contacts", contactRoutes);
 
 export default router;
