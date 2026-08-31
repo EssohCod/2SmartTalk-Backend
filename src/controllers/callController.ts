@@ -179,8 +179,11 @@ export const callController = {
         },
       });
     } catch (error: any) {
-      console.error("CallController.getIncomingCall error:", error);
-      res.status(500).json({ error: "Failed to check incoming calls." });
+      console.warn("CallController.getIncomingCall error:", error?.message || error);
+      res.status(200).json({
+        hasIncomingCall: false,
+        session: null,
+      });
     }
   },
 
