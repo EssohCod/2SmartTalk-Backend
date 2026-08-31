@@ -6,6 +6,7 @@ import translationRoutes from "./translation.routes";
 import dubbingRoutes from "./dubbing.routes";
 import contactRoutes from "./contact.routes";
 import groupRoutes from "./group.routes";
+import chatRoutes from "./chat.routes";
 
 const router = Router();
 
@@ -29,5 +30,8 @@ router.use("/contacts", contactRoutes);
 
 // Mount multilingual groups routes
 router.use("/groups", groupRoutes);
+
+// Mount chats & messaging routes
+router.use("/chats", chatRoutes);
 
 export default router;

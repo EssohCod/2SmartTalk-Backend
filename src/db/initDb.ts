@@ -115,6 +115,48 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    // 6. Conversations Table (Direct & Group Chat Threads)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        type VARCHAR(50) NOT NULL DEFAULT 'direct', -- 'direct' | 'group'
+        title VARCHAR(255) NOT NULL,
+        avatar_url TEXT,
+        group_id UUID REFERENCES groups(id) ON DELETE SET NULL,
+        participants JSONB DEFAULT '[]'::jsonb,
+        last_message TEXT,
+        last_message_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        unread_count INT DEFAULT 0,
+        recipient_lang VARCHAR(100) DEFAULT 'English',
+        recipient_lang_flag VARCHAR(10) DEFAULT '🇺🇸',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
+    // 7. Messages Table (Real-Time Translated Messages)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE,
+        sender_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        sender_name VARCHAR(200) NOT NULL,
+        sender_username VARCHAR(100),
+        sender_avatar TEXT,
+        sender_language VARCHAR(100) DEFAULT 'English',
+        sender_language_flag VARCHAR(10) DEFAULT '🇺🇸',
+        original_text TEXT NOT NULL,
+        translated_text TEXT,
+        target_language VARCHAR(100),
+        target_language_flag VARCHAR(10),
+        message_type VARCHAR(50) DEFAULT 'text', -- 'text' | 'audio' | 'image' | 'video' | 'file'
+        audio_url TEXT,
+        audio_duration VARCHAR(20),
+        media_url TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -125,10 +167,12 @@ export async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);
       CREATE INDEX IF NOT EXISTS idx_contacts_username ON contacts(username);
       CREATE INDEX IF NOT EXISTS idx_groups_created ON groups(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_conversations_last_msg ON conversations(last_message_time DESC);
+      CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at ASC);
     `);
 
     await client.query("COMMIT");
-    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups tables ready)");
+    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages tables ready)");
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("❌ Failed to initialize database schema:", error);
