@@ -28,33 +28,35 @@ app.use("/api", apiRoutes);
 // Global Error Handler
 app.use(errorHandler);
 
-// Start server
-const PORT = env.port;
-const server = app.listen(PORT, async () => {
-  console.log(`🚀 2SmartTalk Backend server running on http://localhost:${PORT}`);
-  console.log(`📡 Environment: ${env.nodeEnv}`);
+// Start server for local development or traditional hosting
+if (!process.env.VERCEL) {
+  const PORT = env.port;
+  const server = app.listen(PORT, "0.0.0.0", async () => {
+    console.log(`🚀 2SmartTalk Backend server running on http://0.0.0.0:${PORT}`);
+    console.log(`📡 Environment: ${env.nodeEnv}`);
 
-  // Test database connection at startup
-  const dbConnected = await checkDatabaseConnection();
-  if (dbConnected) {
-    console.log("✅ PostgreSQL connected successfully");
-    try {
-      await initDb();
-    } catch (err) {
-      console.error("⚠️  Database initialization error:", err);
+    // Test database connection at startup
+    const dbConnected = await checkDatabaseConnection();
+    if (dbConnected) {
+      console.log("✅ PostgreSQL connected successfully");
+      try {
+        await initDb();
+      } catch (err) {
+        console.error("⚠️  Database initialization error:", err);
+      }
+    } else {
+      console.log("⚠️  PostgreSQL connection unavailable (check your DB credentials in .env)");
     }
-  } else {
-    console.log("⚠️  PostgreSQL connection unavailable (check your DB credentials in .env)");
-  }
-});
-
-// Graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully...");
-  server.close(() => {
-    console.log("Server closed");
-    process.exit(0);
   });
-});
+
+  // Graceful shutdown
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received, shutting down gracefully...");
+    server.close(() => {
+      console.log("Server closed");
+      process.exit(0);
+    });
+  });
+}
 
 export default app;
