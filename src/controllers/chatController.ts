@@ -1,6 +1,10 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
-import { translationService, SUPPORTED_LANGUAGES, normalizeLanguageCode } from "../services/translationService";
+import { translationService, normalizeLanguageCode } from "../services/translationService";
+
+function isUuid(str: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
 
 export const chatController = {
   /**
@@ -22,6 +26,60 @@ export const chatController = {
 
       const result = await pool.query(query, params);
 
+      // If conversations table is empty, seed initial conversations
+      if (result.rows.length === 0 && !typeFilter) {
+        const seedConversations = [
+          {
+            title: "Sarah Johnson",
+            type: "direct",
+            lang: "Russian",
+            flag: "🇷🇺",
+            lastMsg: "Thanks! See you on the call.",
+            unread: 2,
+          },
+          {
+            title: "Maria Santos",
+            type: "direct",
+            lang: "Filipino (Tagalog)",
+            flag: "🇵🇭",
+            lastMsg: "Salamat! Makakausap kita mamaya.",
+            unread: 1,
+          },
+          {
+            title: "Team Sync",
+            type: "group",
+            lang: "Global",
+            flag: "🌐",
+            lastMsg: "Alex: I've shared the meeting notes.",
+            unread: 5,
+          },
+          {
+            title: "Client Call",
+            type: "direct",
+            lang: "Spanish",
+            flag: "🇪🇸",
+            lastMsg: "Perfect, thank you!",
+            unread: 1,
+          },
+        ];
+
+        for (const c of seedConversations) {
+          await pool.query(
+            `INSERT INTO conversations (
+              title, type, recipient_lang, recipient_lang_flag, last_message, unread_count, last_message_time
+            ) VALUES ($1, $2, $3, $4, $5, $6, NOW() - interval '10 minutes')`,
+            [c.title, c.type, c.lang, c.flag, c.lastMsg, c.unread]
+          );
+        }
+      }
+
+      const refreshedResult = await pool.query(
+        typeFilter && (typeFilter === "direct" || typeFilter === "group")
+          ? "SELECT * FROM conversations WHERE type = $1 ORDER BY last_message_time DESC"
+          : "SELECT * FROM conversations ORDER BY last_message_time DESC",
+        typeFilter && (typeFilter === "direct" || typeFilter === "group") ? [typeFilter] : []
+      );
+
       // Also retrieve groups from `groups` table to ensure every group created shows up under the Groups tab
       let groupRows: any[] = [];
       if (!typeFilter || typeFilter === "group" || typeFilter === "all") {
@@ -29,7 +87,7 @@ export const chatController = {
         groupRows = groupsRes.rows;
       }
 
-      const dbConversations = result.rows.map((row) => ({
+      const dbConversations = refreshedResult.rows.map((row) => ({
         id: row.id,
         name: row.title,
         avatarUrl: row.avatar_url,
@@ -78,13 +136,13 @@ export const chatController = {
   },
 
   /**
-   * 2. Create Conversation
+   * 2. Create a Conversation
    */
   async createConversation(req: Request, res: Response): Promise<void> {
     try {
       const {
         title,
-        type = "direct",
+        type = "direct", // 'direct' | 'group'
         avatarUrl = null,
         recipientLang = "English",
         recipientLangFlag = "🇺🇸",
@@ -147,7 +205,17 @@ export const chatController = {
    */
   async getMessages(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
+
+      if (!id || !isUuid(id)) {
+        // Return clean empty message list for non-UUID mock ids
+        res.status(200).json({
+          success: true,
+          count: 0,
+          messages: [],
+        });
+        return;
+      }
 
       const result = await pool.query(
         "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
@@ -161,10 +229,10 @@ export const chatController = {
         senderName: row.sender_name,
         senderUsername: row.sender_username,
         senderAvatar: row.sender_avatar,
-        senderLanguage: row.sender_language,
-        senderLanguageFlag: row.sender_language_flag,
+        senderLanguage: row.sender_language || "English",
+        senderLanguageFlag: row.sender_language_flag || "🇺🇸",
         text: row.original_text,
-        translatedText: row.translated_text,
+        translatedText: row.translated_text || row.original_text,
         targetLanguage: row.target_language,
         targetLanguageFlag: row.target_language_flag,
         messageType: row.message_type || "text",
@@ -191,7 +259,7 @@ export const chatController = {
    */
   async sendMessage(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
       const {
         text,
         senderName = "Emma Johnson",
@@ -229,6 +297,24 @@ export const chatController = {
         }
       }
 
+      let convId = id;
+      // If conversation id is not a valid UUID, create a real conversation in DB
+      if (!isUuid(convId)) {
+        const createConv = await pool.query(
+          `INSERT INTO conversations (
+            title, type, recipient_lang, recipient_lang_flag, last_message, last_message_time
+          ) VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id`,
+          [
+            senderName || "Direct Chat",
+            "direct",
+            targetLanguage,
+            targetLanguageFlag,
+            cleanText,
+          ]
+        );
+        convId = createConv.rows[0].id;
+      }
+
       // 1. Insert message
       const insertResult = await pool.query(
         `INSERT INTO messages (
@@ -240,7 +326,7 @@ export const chatController = {
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
         ) RETURNING *`,
         [
-          id,
+          convId,
           senderName,
           senderUsername,
           senderAvatar,
@@ -257,34 +343,36 @@ export const chatController = {
         ]
       );
 
-      const newMsg = insertResult.rows[0];
+      const msgRow = insertResult.rows[0];
 
-      // 2. Update conversation's last message
+      // 2. Update parent conversation last_message
       await pool.query(
-        "UPDATE conversations SET last_message = $1, last_message_time = NOW() WHERE id = $2",
-        [cleanText || "[Media message]", id]
+        `UPDATE conversations
+         SET last_message = $1, last_message_time = NOW()
+         WHERE id = $2`,
+        [cleanText, convId]
       );
 
       res.status(201).json({
         success: true,
         message: {
-          id: newMsg.id,
-          conversationId: newMsg.conversation_id,
-          senderName: newMsg.sender_name,
-          senderUsername: newMsg.sender_username,
-          senderAvatar: newMsg.sender_avatar,
-          senderLanguage: newMsg.sender_language,
-          senderLanguageFlag: newMsg.sender_language_flag,
-          text: newMsg.original_text,
-          translatedText: newMsg.translated_text,
-          targetLanguage: newMsg.target_language,
-          targetLanguageFlag: newMsg.target_language_flag,
-          messageType: newMsg.message_type,
-          audioUrl: newMsg.audio_url,
-          audioDuration: newMsg.audio_duration,
-          mediaUrl: newMsg.media_url,
-          timestamp: "Just now",
-          createdAt: newMsg.created_at,
+          id: msgRow.id,
+          conversationId: msgRow.conversation_id,
+          senderName: msgRow.sender_name,
+          senderUsername: msgRow.sender_username,
+          senderAvatar: msgRow.sender_avatar,
+          senderLanguage: msgRow.sender_language,
+          senderLanguageFlag: msgRow.sender_language_flag,
+          text: msgRow.original_text,
+          translatedText: msgRow.translated_text,
+          targetLanguage: msgRow.target_language,
+          targetLanguageFlag: msgRow.target_language_flag,
+          messageType: msgRow.message_type,
+          audioUrl: msgRow.audio_url,
+          audioDuration: msgRow.audio_duration,
+          mediaUrl: msgRow.media_url,
+          timestamp: new Date(msgRow.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          createdAt: msgRow.created_at,
         },
       });
     } catch (error: any) {
@@ -298,17 +386,21 @@ export const chatController = {
    */
   async deleteConversation(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
+      const id = req.params.id as string;
 
-      const deleteResult = await pool.query(
-        "DELETE FROM conversations WHERE id = $1 RETURNING id",
-        [id]
-      );
+      if (!isUuid(id)) {
+        res.status(200).json({
+          success: true,
+          message: "Conversation deleted successfully.",
+        });
+        return;
+      }
+
+      await pool.query("DELETE FROM conversations WHERE id = $1", [id]);
 
       res.status(200).json({
         success: true,
         message: "Conversation deleted successfully.",
-        deletedId: id,
       });
     } catch (error: any) {
       console.error("ChatController.deleteConversation error:", error);
