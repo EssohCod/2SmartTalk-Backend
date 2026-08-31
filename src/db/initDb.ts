@@ -179,6 +179,34 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    // 9. Call Sessions Table (Real-Time Audio & Video Call Signaling)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS call_sessions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        caller_name VARCHAR(255) NOT NULL,
+        caller_username VARCHAR(255),
+        caller_avatar TEXT,
+        caller_language VARCHAR(100) DEFAULT 'English',
+        caller_language_flag VARCHAR(10) DEFAULT '🇺🇸',
+        caller_location VARCHAR(255),
+        callee_name VARCHAR(255) NOT NULL,
+        callee_username VARCHAR(255),
+        callee_avatar TEXT,
+        callee_language VARCHAR(100) DEFAULT 'French',
+        callee_language_flag VARCHAR(10) DEFAULT '🇫🇷',
+        callee_location VARCHAR(255),
+        call_type VARCHAR(50) DEFAULT 'audio', -- 'audio' | 'video'
+        status VARCHAR(50) DEFAULT 'ringing', -- 'ringing' | 'connected' | 'declined' | 'ended' | 'missed'
+        room_id VARCHAR(255),
+        started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        connected_at TIMESTAMP WITH TIME ZONE,
+        ended_at TIMESTAMP WITH TIME ZONE,
+        duration_seconds INTEGER DEFAULT 0,
+        quick_reply TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -192,10 +220,12 @@ export async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_conversations_last_msg ON conversations(last_message_time DESC);
       CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at ASC);
       CREATE INDEX IF NOT EXISTS idx_calls_direction ON calls(call_direction, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_call_sessions_status ON call_sessions(status, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_call_sessions_callee ON call_sessions(callee_name, status);
     `);
 
     await client.query("COMMIT");
-    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages, calls tables ready)");
+    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages, calls, call_sessions tables ready)");
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("❌ Failed to initialize database schema:", error);

@@ -3,16 +3,19 @@ import { callController } from "../controllers/callController";
 
 const router = Router();
 
-// GET /api/calls - Get calls history (supports ?direction=all|missed|incoming|outgoing&search=...)
+// 1. Call Signaling & Real-time Session Endpoints
+router.post("/initiate", callController.initiateCall);
+router.get("/incoming", callController.getIncomingCall);
+router.post("/:sessionId/accept", callController.acceptCall);
+router.post("/:sessionId/decline", callController.declineCall);
+router.post("/:sessionId/end", callController.endCall);
+router.get("/:sessionId/status", callController.getSessionStatus);
+router.post("/:sessionId/translate-speech", callController.translateCallSpeech);
+
+// 2. Call History Logs Endpoints
 router.get("/", callController.getCalls);
-
-// POST /api/calls - Log a call
 router.post("/", callController.logCall);
-
-// DELETE /api/calls/:id - Delete single call
 router.delete("/:id", callController.deleteCall);
-
-// DELETE /api/calls - Clear all call history
 router.delete("/", callController.clearCallHistory);
 
 export default router;
