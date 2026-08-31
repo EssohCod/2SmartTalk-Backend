@@ -7,6 +7,7 @@ import dubbingRoutes from "./dubbing.routes";
 import contactRoutes from "./contact.routes";
 import groupRoutes from "./group.routes";
 import chatRoutes from "./chat.routes";
+import callRoutes from "./call.routes";
 
 const router = Router();
 
@@ -33,5 +34,8 @@ router.use("/groups", groupRoutes);
 
 // Mount chats & messaging routes
 router.use("/chats", chatRoutes);
+
+// Mount calls history & logs routes
+router.use("/calls", callRoutes);
 
 export default router;

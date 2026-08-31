@@ -157,6 +157,28 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    // 8. Calls Table (Call History & Live Logs)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS calls (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        contact_name VARCHAR(200) NOT NULL,
+        contact_username VARCHAR(100),
+        contact_avatar TEXT,
+        contact_language VARCHAR(100) DEFAULT 'English',
+        contact_language_flag VARCHAR(10) DEFAULT '🇺🇸',
+        call_type VARCHAR(50) NOT NULL DEFAULT 'video', -- 'video' | 'audio'
+        call_direction VARCHAR(50) NOT NULL DEFAULT 'incoming', -- 'incoming' | 'outgoing' | 'missed'
+        call_status VARCHAR(50) DEFAULT 'completed', -- 'completed' | 'missed' | 'declined'
+        duration VARCHAR(50) DEFAULT '0 mins 0 secs',
+        started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        ended_at TIMESTAMP WITH TIME ZONE,
+        is_group BOOLEAN DEFAULT false,
+        group_name VARCHAR(200),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -169,10 +191,11 @@ export async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_groups_created ON groups(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_conversations_last_msg ON conversations(last_message_time DESC);
       CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_calls_direction ON calls(call_direction, started_at DESC);
     `);
 
     await client.query("COMMIT");
-    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages tables ready)");
+    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages, calls tables ready)");
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("❌ Failed to initialize database schema:", error);
