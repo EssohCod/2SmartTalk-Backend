@@ -46,15 +46,46 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    // 3. Meetings Table (Scheduled & Upcoming Meetings)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS meetings (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        host_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        host_email VARCHAR(255),
+        title VARCHAR(255) NOT NULL,
+        meeting_type VARCHAR(50) DEFAULT 'video',
+        meeting_date VARCHAR(100) NOT NULL,
+        start_time VARCHAR(50) NOT NULL,
+        end_time VARCHAR(50) NOT NULL,
+        timezone VARCHAR(100) NOT NULL,
+        duration VARCHAR(100),
+        shareable_link TEXT NOT NULL,
+        participants JSONB DEFAULT '[]'::jsonb,
+        dubbing_enabled BOOLEAN DEFAULT true,
+        is_host BOOLEAN DEFAULT true,
+        mute_all_allowed BOOLEAN DEFAULT true,
+        allow_unmute BOOLEAN DEFAULT true,
+        waiting_room_enabled BOOLEAN DEFAULT false,
+        reminder_10min BOOLEAN DEFAULT true,
+        speak_language VARCHAR(100) DEFAULT 'English',
+        speak_language_flag VARCHAR(10) DEFAULT '🇺🇸',
+        status VARCHAR(50) DEFAULT 'upcoming',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
       CREATE INDEX IF NOT EXISTS idx_otps_email_type ON otps(email, type);
+      CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_meetings_host ON meetings(host_email);
     `);
 
     await client.query("COMMIT");
-    console.log("✅ Database schema initialized successfully (users, otps tables ready)");
+    console.log("✅ Database schema initialized successfully (users, otps, meetings tables ready)");
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("❌ Failed to initialize database schema:", error);
