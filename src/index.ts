@@ -4,6 +4,7 @@ import { env } from "./config/env";
 import apiRoutes from "./routes";
 import { errorHandler } from "./middlewares/errorHandler";
 import { checkDatabaseConnection } from "./config/db";
+import { initDb } from "./db/initDb";
 
 const app: Application = express();
 
@@ -37,6 +38,11 @@ const server = app.listen(PORT, async () => {
   const dbConnected = await checkDatabaseConnection();
   if (dbConnected) {
     console.log("✅ PostgreSQL connected successfully");
+    try {
+      await initDb();
+    } catch (err) {
+      console.error("⚠️  Database initialization error:", err);
+    }
   } else {
     console.log("⚠️  PostgreSQL connection unavailable (check your DB credentials in .env)");
   }

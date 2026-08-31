@@ -11,9 +11,27 @@ export const env = {
   db: {
     host: process.env.DB_HOST || "localhost",
     port: parseInt(process.env.DB_PORT || "5432", 10),
-    database: process.env.DB_NAME || "twosmarttalk_db",
-    user: process.env.DB_USER || "postgres",
-    password: process.env.DB_PASSWORD || "postgres",
-    connectionString: process.env.DATABASE_URL,
+    database: process.env.DB_NAME || "db_2smart_talk",
+    user: process.env.DB_USER || "db_2smart_talk_user",
+    password: process.env.DB_PASSWORD || "",
+    connectionString: process.env.DATABASE_URL || process.env.EXTERNAL_DB_URL,
+    ssl:
+      process.env.DB_SSL === "true" ||
+      process.env.NODE_ENV === "production" ||
+      !!process.env.EXTERNAL_DB_URL ||
+      (!!process.env.DB_HOST && !process.env.DB_HOST.includes("localhost") && !process.env.DB_HOST.includes("127.0.0.1")),
+  },
+  jwt: {
+    secret: process.env.JWT_SECRET || "2smarttalk_super_secret_jwt_key_2026_secure",
+    expiresIn: process.env.JWT_EXPIRES_IN || "7d",
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "30d",
+  },
+  smtp: {
+    host: process.env.SMTP_HOST || "smtp.gmail.com",
+    port: parseInt(process.env.SMTP_PORT || "587", 10),
+    secure: process.env.SMTP_SECURE === "true",
+    user: process.env.SMTP_USER || "nessoh1007@gmail.com",
+    pass: process.env.SMTP_PASS || "mgbzmgxvstibzbwk",
+    from: process.env.EMAIL_FROM || '"2SmartTalk" <no-reply@2smarttalk.com>',
   },
 };
