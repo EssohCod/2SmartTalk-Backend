@@ -9,6 +9,7 @@ import groupRoutes from "./group.routes";
 import chatRoutes from "./chat.routes";
 import callRoutes from "./call.routes";
 import userRoutes from "./user.routes";
+import notificationRoutes from "./notification.routes";
 
 const router = Router();
 
@@ -20,6 +21,9 @@ router.use("/auth", authRoutes);
 
 // Mount user profile & settings routes
 router.use("/user", userRoutes);
+
+// Mount notifications routes
+router.use("/notifications", notificationRoutes);
 
 // Mount meeting routes
 router.use("/meetings", meetingRoutes);

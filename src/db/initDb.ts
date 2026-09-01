@@ -223,6 +223,30 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    // 10. Notifications Table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        user_email VARCHAR(255),
+        category VARCHAR(50) NOT NULL DEFAULT 'system', -- 'meetings' | 'messages' | 'system'
+        title VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL,
+        is_unread BOOLEAN DEFAULT true,
+        avatar_url TEXT DEFAULT NULL,
+        icon_name VARCHAR(100) DEFAULT 'bell',
+        icon_bg_color VARCHAR(50) DEFAULT '#EFF6FF',
+        icon_color VARCHAR(50) DEFAULT '#3B82F6',
+        action_type VARCHAR(50) DEFAULT NULL, -- 'join_meeting' | 'call_back' | 'open_chat' | 'view_info'
+        action_label VARCHAR(100) DEFAULT NULL,
+        contact_data JSONB DEFAULT NULL,
+        meeting_id VARCHAR(100) DEFAULT NULL,
+        chat_id VARCHAR(100) DEFAULT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -238,10 +262,13 @@ export async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_calls_direction ON calls(call_direction, started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_call_sessions_status ON call_sessions(status, started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_call_sessions_callee ON call_sessions(callee_name, status);
+      CREATE INDEX IF NOT EXISTS idx_notifications_email ON notifications(user_email, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_category ON notifications(category, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(is_unread);
     `);
 
     await client.query("COMMIT");
-    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages, calls, call_sessions tables ready)");
+    console.log("✅ Database schema initialized successfully (users, otps, meetings, contacts, groups, conversations, messages, calls, call_sessions, notifications tables ready)");
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("❌ Failed to initialize database schema:", error);
