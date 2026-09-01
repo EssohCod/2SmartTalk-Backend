@@ -125,10 +125,10 @@ export const userController = {
       };
 
       const defaultSubscription = {
-        plan: "Pro Annual",
-        status: "active",
-        renewalDate: "2027-05-15",
-        amount: "$99.99/yr",
+        plan: "No active plan",
+        status: "inactive",
+        renewalDate: "",
+        amount: "",
       };
 
       const subscription = {
@@ -145,10 +145,10 @@ export const userController = {
           lastName: userRow.last_name,
           username: userRow.username.startsWith("@") ? userRow.username : `@${userRow.username}`,
           email: userRow.email,
-          phone: userRow.phone || "+1 (555) 234-8921",
+          phone: userRow.phone || null,
           gender: userRow.gender || "Other",
           bio: userRow.bio || "Connecting across cultures with 2SmartTalk 🌐",
-          location: userRow.location || "Global",
+          location: userRow.location || null,
           nativeLanguage: userRow.native_language || "English",
           nativeLanguageFlag: userRow.native_language_flag || "🇺🇸",
           liveTranslationEnabled: userRow.live_translation_enabled !== false,
@@ -159,6 +159,8 @@ export const userController = {
           isOnline: true,
           settings,
           subscription,
+          twoFactorEnabled: userRow.two_factor_enabled === true,
+          blockedContactsCount: Number(userRow.blocked_contacts_count || 0),
         },
       });
     } catch (error: any) {
@@ -527,7 +529,16 @@ export const userController = {
 
       const { topic, message } = req.body;
 
-      console.log(`📩 Support Feedback received from ${email || "Anonymous"}: [${topic}] ${message}`);
+      if (!topic || !message || typeof topic !== "string" || typeof message !== "string") {
+        res.status(400).json({ error: "A topic and message are required." });
+        return;
+      }
+
+      await query(
+        `INSERT INTO feedback (user_id, email, topic, message)
+         VALUES ($1, $2, $3, $4)`,
+        [req.user?.userId || null, email || null, topic.trim(), message.trim()]
+      );
 
       res.status(200).json({
         success: true,
@@ -576,15 +587,11 @@ export const userController = {
         peopleOnline = parseInt(contactsOnline.rows[0]?.count || "0", 10);
       }
 
-      // 3. Call Quality Rating
-      const callQuality = "4.9";
-
       res.status(200).json({
         success: true,
         stats: {
           meetingsToday,
           peopleOnline,
-          callQuality,
           meetingLabel: meetingsToday === 1 ? "Meeting Today" : "Meetings Today",
         },
       });
@@ -595,7 +602,6 @@ export const userController = {
         stats: {
           meetingsToday: 0,
           peopleOnline: 0,
-          callQuality: "4.9",
           meetingLabel: "Meetings Today",
         },
       });

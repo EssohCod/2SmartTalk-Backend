@@ -126,8 +126,19 @@ export const meetingController = {
         reminder10Min = true,
         speakLanguage = "English",
         speakLanguageFlag = "🇺🇸",
-        hostEmail = "user@2smarttalk.com",
+        hostEmail,
       } = req.body;
+      const requestUser = (req as any).user;
+      const resolvedHostEmail =
+        requestUser?.email ||
+        (req.headers["x-user-email"] as string) ||
+        hostEmail ||
+        null;
+      const resolvedHostId =
+        requestUser?.userId ||
+        requestUser?.id ||
+        (req.headers["x-user-id"] as string) ||
+        null;
 
       if (!title || typeof title !== "string" || !title.trim()) {
         res.status(400).json({ error: "Meeting title/topic is required." });
@@ -148,14 +159,15 @@ export const meetingController = {
 
       const insertResult = await query<MeetingDbRow>(
         `INSERT INTO meetings (
-          title, meeting_type, meeting_date, start_time, end_time, timezone, 
+          host_id, title, meeting_type, meeting_date, start_time, end_time, timezone, 
           duration, shareable_link, participants, dubbing_enabled, is_host, 
           mute_all_allowed, allow_unmute, waiting_room_enabled, reminder_10min, 
           speak_language, speak_language_flag, status, host_email
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'upcoming', $18
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'upcoming', $19
         ) RETURNING *`,
         [
+          resolvedHostId,
           cleanTitle,
           meetingType,
           date,
@@ -173,7 +185,7 @@ export const meetingController = {
           Boolean(reminder10Min),
           speakLanguage,
           speakLanguageFlag,
-          hostEmail,
+          resolvedHostEmail,
         ]
       );
 

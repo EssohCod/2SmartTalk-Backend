@@ -106,7 +106,11 @@ export const contactController = {
       let resolvedLoc = location;
 
       const userCheck = await pool.query(
-        "SELECT id, avatar_url, native_language, native_language_flag, bio, location FROM users WHERE LOWER(username) = LOWER($1) OR (id::text = $2) LIMIT 1",
+        `SELECT id, name, username, email, phone, avatar_url, native_language,
+                native_language_flag, bio, location
+         FROM users
+         WHERE LOWER(username) = LOWER($1) OR (id::text = $2)
+         LIMIT 1`,
         [cleanUsername, contactUserId || "00000000-0000-0000-0000-000000000000"]
       );
 
@@ -120,6 +124,30 @@ export const contactController = {
         if (!resolvedLoc || resolvedLoc === "Global") resolvedLoc = row.location || "Global";
       }
 
+      const ensureReciprocalContact = async (): Promise<void> => {
+        if (!userId || !contactUserId || userId === contactUserId) return;
+
+        await pool.query(
+          `INSERT INTO contacts (
+             user_id, contact_user_id, name, username, email, phone,
+             avatar_url, native_language, native_language_flag, location,
+             is_online, is_favorite, bio
+           )
+           SELECT
+             $1, u.id, u.name, CASE WHEN u.username LIKE '@%' THEN u.username ELSE '@' || u.username END,
+             u.email, u.phone, u.avatar_url, u.native_language, u.native_language_flag,
+             u.location, true, false, u.bio
+           FROM users u
+           WHERE u.id = $2
+             AND NOT EXISTS (
+               SELECT 1 FROM contacts c
+               WHERE c.user_id = $1
+                 AND (c.contact_user_id = $2 OR LOWER(c.username) = LOWER('@' || u.username))
+             )`,
+          [contactUserId, userId]
+        );
+      };
+
       // Prevent duplicate contacts
       if (userId) {
         const existing = await pool.query(
@@ -130,6 +158,7 @@ export const contactController = {
 
         if (existing.rows.length > 0) {
           const row = existing.rows[0];
+          await ensureReciprocalContact();
           res.status(200).json({
             success: true,
             message: "Contact already in your contacts list.",
@@ -175,6 +204,8 @@ export const contactController = {
       );
 
       const newRow = insertResult.rows[0];
+
+      await ensureReciprocalContact();
 
       res.status(201).json({
         success: true,

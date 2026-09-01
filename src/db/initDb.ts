@@ -34,7 +34,9 @@ export async function initDb(): Promise<void> {
         live_translation_enabled BOOLEAN DEFAULT true,
         member_since VARCHAR(100) DEFAULT NULL,
         settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb,
-        subscription JSONB DEFAULT '{"plan": "Pro Annual", "status": "active", "renewalDate": "2027-05-15", "amount": "$99.99/yr"}'::jsonb,
+        subscription JSONB DEFAULT '{"plan": "No active plan", "status": "inactive", "renewalDate": "", "amount": ""}'::jsonb,
+        two_factor_enabled BOOLEAN DEFAULT false,
+        blocked_contacts_count INTEGER DEFAULT 0,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
@@ -48,12 +50,25 @@ export async function initDb(): Promise<void> {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS live_translation_enabled BOOLEAN DEFAULT true;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS member_since VARCHAR(100) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription JSONB DEFAULT '{"plan": "Pro Annual", "status": "active", "renewalDate": "2027-05-15", "amount": "$99.99/yr"}'::jsonb;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription JSONB DEFAULT '{"plan": "No active plan", "status": "inactive", "renewalDate": "", "amount": ""}'::jsonb;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT false;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked_contacts_count INTEGER DEFAULT 0;
 
       -- Update any member_since that was set to static 'May 2024' or NULL to the user's actual join month and year
       UPDATE users 
       SET member_since = TO_CHAR(created_at, 'FMMonth YYYY')
       WHERE (member_since = 'May 2024' OR member_since IS NULL) AND created_at IS NOT NULL;
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS feedback (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        email VARCHAR(255),
+        topic VARCHAR(100) NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
     `);
 
     // 2. OTPs Table (Email verification, Password reset)
@@ -118,6 +133,41 @@ export async function initDb(): Promise<void> {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+    `);
+
+    // Backfill reciprocal rows for contacts created before contact additions
+    // became mutual.
+    await client.query(`
+      INSERT INTO contacts (
+        user_id, contact_user_id, name, username, email, phone,
+        avatar_url, native_language, native_language_flag, location,
+        is_online, is_favorite, bio
+      )
+      SELECT
+        c.contact_user_id,
+        c.user_id,
+        u.name,
+        CASE WHEN u.username LIKE '@%' THEN u.username ELSE '@' || u.username END,
+        u.email,
+        u.phone,
+        u.avatar_url,
+        u.native_language,
+        u.native_language_flag,
+        u.location,
+        true,
+        false,
+        u.bio
+      FROM contacts c
+      JOIN users u ON u.id = c.user_id
+      WHERE c.user_id IS NOT NULL
+        AND c.contact_user_id IS NOT NULL
+        AND c.user_id <> c.contact_user_id
+        AND NOT EXISTS (
+          SELECT 1
+          FROM contacts reciprocal
+          WHERE reciprocal.user_id = c.contact_user_id
+            AND reciprocal.contact_user_id = c.user_id
+        );
     `);
 
     // 5. Groups Table (Multilingual Collaboration Groups)
