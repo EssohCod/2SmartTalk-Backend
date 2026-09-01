@@ -284,8 +284,33 @@ export const chatController = {
       }
 
       let convId = id;
-      // If conversation id is not a valid UUID, create a real conversation in DB
-      if (!isUuid(convId)) {
+      let convExists = false;
+
+      if (isUuid(convId)) {
+        const check = await pool.query("SELECT id FROM conversations WHERE id = $1", [convId]);
+        if (check.rows.length > 0) {
+          convExists = true;
+        } else {
+          // If valid UUID (e.g. contact ID) but doesn't exist yet, insert with this exact ID
+          await pool.query(
+            `INSERT INTO conversations (
+              id, title, type, recipient_lang, recipient_lang_flag, last_message, last_message_time
+            ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            ON CONFLICT (id) DO UPDATE SET last_message = EXCLUDED.last_message, last_message_time = NOW()`,
+            [
+              convId,
+              targetLanguage ? `${senderName} & Partner` : (senderName || "Direct Chat"),
+              "direct",
+              targetLanguage,
+              targetLanguageFlag,
+              cleanText,
+            ]
+          );
+          convExists = true;
+        }
+      }
+
+      if (!convExists) {
         const createConv = await pool.query(
           `INSERT INTO conversations (
             title, type, recipient_lang, recipient_lang_flag, last_message, last_message_time
