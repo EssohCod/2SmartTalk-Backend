@@ -8,7 +8,15 @@ export const contactController = {
   async getContacts(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
-      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.query.userId as string);
+      let userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.query.userId as string);
+      const userEmail = user?.email || (req.headers["x-user-email"] as string) || (req.query.email as string);
+
+      if (!userId && userEmail) {
+        const u = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1", [userEmail.trim()]);
+        if (u.rows.length > 0) {
+          userId = u.rows[0].id;
+        }
+      }
 
       if (!userId) {
         res.status(200).json({
@@ -58,8 +66,18 @@ export const contactController = {
   async addContact(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
-      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || req.body.userId;
+      let userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || req.body.userId;
+      const userEmail = user?.email || (req.headers["x-user-email"] as string) || req.body.userEmail;
+
+      if (!userId && userEmail) {
+        const u = await pool.query("SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1", [userEmail.trim()]);
+        if (u.rows.length > 0) {
+          userId = u.rows[0].id;
+        }
+      }
+
       const {
+        contactUserId: bodyContactUserId,
         name,
         username,
         email = "",
@@ -79,18 +97,28 @@ export const contactController = {
       const cleanUsername = username.trim().replace(/^@/, "");
       const cleanName = name.trim();
 
-      // Check if user exists in the platform
+      // Check if user exists in the platform by username or by contactUserId
+      let contactUserId = bodyContactUserId || null;
+      let resolvedAvatar = avatarUrl;
+      let resolvedLang = nativeLanguage;
+      let resolvedFlag = nativeLanguageFlag;
+      let resolvedBio = bio;
+      let resolvedLoc = location;
+
       const userCheck = await pool.query(
-        "SELECT id, avatar_url, native_language, native_language_flag, bio, location FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
-        [cleanUsername]
+        "SELECT id, avatar_url, native_language, native_language_flag, bio, location FROM users WHERE LOWER(username) = LOWER($1) OR (id::text = $2) LIMIT 1",
+        [cleanUsername, contactUserId || "00000000-0000-0000-0000-000000000000"]
       );
 
-      const contactUserId = userCheck.rows.length > 0 ? userCheck.rows[0].id : null;
-      const resolvedAvatar = avatarUrl || (userCheck.rows.length > 0 ? userCheck.rows[0].avatar_url : null);
-      const resolvedLang = nativeLanguage || (userCheck.rows.length > 0 ? userCheck.rows[0].native_language : "English");
-      const resolvedFlag = nativeLanguageFlag || (userCheck.rows.length > 0 ? userCheck.rows[0].native_language_flag : "🇺🇸");
-      const resolvedBio = bio || (userCheck.rows.length > 0 ? userCheck.rows[0].bio : "");
-      const resolvedLoc = location || (userCheck.rows.length > 0 ? userCheck.rows[0].location : "Global");
+      if (userCheck.rows.length > 0) {
+        const row = userCheck.rows[0];
+        contactUserId = row.id;
+        if (!resolvedAvatar) resolvedAvatar = row.avatar_url;
+        if (!resolvedLang || resolvedLang === "English") resolvedLang = row.native_language || "English";
+        if (!resolvedFlag || resolvedFlag === "🇺🇸") resolvedFlag = row.native_language_flag || "🇺🇸";
+        if (!resolvedBio) resolvedBio = row.bio;
+        if (!resolvedLoc || resolvedLoc === "Global") resolvedLoc = row.location || "Global";
+      }
 
       // Prevent duplicate contacts
       if (userId) {
@@ -312,9 +340,21 @@ export const contactController = {
   async getSuggestions(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
-      const currentUserId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
+      let currentUserId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
+      const userEmail = user?.email || (req.headers["x-user-email"] as string);
 
       let userLanguage = user?.nativeLanguage || (req.headers["x-user-language"] as string);
+
+      if (!currentUserId && userEmail) {
+        const uRes = await pool.query(
+          "SELECT id, native_language FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+          [userEmail.trim()]
+        );
+        if (uRes.rows.length > 0) {
+          currentUserId = uRes.rows[0].id;
+          if (!userLanguage) userLanguage = uRes.rows[0].native_language;
+        }
+      }
 
       // If userLanguage is not in token, look up the requesting user's language
       if (!userLanguage && currentUserId) {
