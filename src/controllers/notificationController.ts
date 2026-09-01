@@ -2,6 +2,34 @@ import { Request, Response } from "express";
 import { query } from "../config/db";
 import { AuthenticatedRequest } from "../middlewares/authMiddleware";
 
+export async function sendExpoPushNotification(
+  userEmail: string | null | undefined,
+  title: string,
+  body: string,
+  data: Record<string, unknown> = {}
+): Promise<void> {
+  if (!userEmail) return;
+  const tokens = await query("SELECT token FROM push_tokens WHERE LOWER(user_email) = LOWER($1)", [userEmail]);
+  if (!tokens.rows.length) return;
+
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(tokens.rows.map((row) => ({
+      to: row.token,
+      sound: "default",
+      title,
+      body,
+      data,
+      priority: "high",
+      channelId: "default",
+    }))),
+  });
+  if (!response.ok) {
+    throw new Error(`Expo push service returned ${response.status}`);
+  }
+}
+
 function formatRelativeTime(dateInput: Date | string): string {
   const date = typeof dateInput === "string" ? new Date(dateInput) : dateInput;
   const now = new Date();
@@ -75,6 +103,28 @@ const mapNotificationRowToDto = (row: NotificationDbRow) => {
 };
 
 export const notificationController = {
+  async registerPushToken(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userEmail = req.user?.email || (req.headers["x-user-email"] as string);
+      const userId = req.user?.userId || (req.headers["x-user-id"] as string) || null;
+      const { token, platform } = req.body;
+      if (!userEmail || !token || !["ios", "android", "web"].includes(platform)) {
+        res.status(400).json({ error: "A valid user, push token, and platform are required." });
+        return;
+      }
+      await query(
+        `INSERT INTO push_tokens (user_id, user_email, token, platform, updated_at)
+         VALUES ($1, LOWER($2), $3, $4, NOW())
+         ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id,
+           user_email = EXCLUDED.user_email, platform = EXCLUDED.platform, updated_at = NOW()`,
+        [userId, userEmail, token, platform]
+      );
+      res.status(201).json({ success: true });
+    } catch (error) {
+      console.error("NotificationController.registerPushToken error:", error);
+      res.status(500).json({ error: "Failed to register push token." });
+    }
+  },
   /**
    * 1. Get all notifications (with optional category filter)
    */
@@ -188,6 +238,17 @@ export const notificationController = {
       ]);
 
       const created = mapNotificationRowToDto(result.rows[0]);
+      try {
+        await sendExpoPushNotification(userEmail, title, description, {
+          notificationId: created.id,
+          category,
+          actionType,
+          meetingId,
+          chatId,
+        });
+      } catch (pushError) {
+        console.error("NotificationController push delivery error:", pushError);
+      }
 
       res.status(201).json({
         success: true,

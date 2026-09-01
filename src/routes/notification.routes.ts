@@ -5,6 +5,7 @@ const router = Router();
 
 // 1. Get notifications (with optional category filter)
 router.get("/", notificationController.getNotifications);
+router.post("/push-token", notificationController.registerPushToken);
 
 // 2. Create notification
 router.post("/", notificationController.createNotification);

@@ -42,19 +42,40 @@ export const chatController = {
         groupRows = groupsRes.rows;
       }
 
-      const dbConversations = refreshedResult.rows.map((row) => ({
-        id: row.id,
-        name: row.title,
-        avatarUrl: row.avatar_url,
-        category: row.type, // 'direct' | 'group'
-        isGroup: row.type === "group",
-        lastMessage: row.last_message || "Start conversation",
-        time: row.last_message_time ? new Date(row.last_message_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
-        unreadCount: row.unread_count || 0,
-        recipientLang: row.recipient_lang || "English",
-        recipientLangFlag: row.recipient_lang_flag || "🇺🇸",
-        participants: row.participants || [],
-        createdAt: row.created_at,
+      const dbConversations = await Promise.all(refreshedResult.rows.map(async (row) => {
+        let recipientLang = row.recipient_lang || "English";
+        let recipientLangFlag = row.recipient_lang_flag || "🇺🇸";
+
+        // Direct-chat language must come from the recipient profile, not a
+        // stale conversation default saved when the thread was created.
+        if (row.type === "direct" && isUuid(row.id)) {
+          const recipient = await pool.query(
+            `SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
+             UNION ALL
+             SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(name) = LOWER($2)
+             LIMIT 1`,
+            [row.id, row.title]
+          );
+          if (recipient.rows[0]?.native_language) {
+            recipientLang = recipient.rows[0].native_language;
+            recipientLangFlag = recipient.rows[0].native_language_flag || recipientLangFlag;
+          }
+        }
+
+        return {
+          id: row.id,
+          name: row.title,
+          avatarUrl: row.avatar_url,
+          category: row.type,
+          isGroup: row.type === "group",
+          lastMessage: row.last_message || "Start conversation",
+          time: row.last_message_time ? new Date(row.last_message_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
+          unreadCount: row.unread_count || 0,
+          recipientLang,
+          recipientLangFlag,
+          participants: row.participants || [],
+          createdAt: row.created_at,
+        };
       }));
 
       // Combine and deduplicate
@@ -161,8 +182,17 @@ export const chatController = {
   async getMessages(req: Request, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
-      const userLanguage = (req.query.userLanguage as string) || (req.headers["x-user-language"] as string);
-      const userLanguageFlag = (req.query.userLanguageFlag as string) || (req.headers["x-user-language-flag"] as string);
+      const authenticatedUser = (req as any).user;
+      const userLanguage =
+        (req.query.userLanguage as string) ||
+        (req.headers["x-user-language"] as string) ||
+        authenticatedUser?.nativeLanguage ||
+        authenticatedUser?.native_language;
+      const userLanguageFlag =
+        (req.query.userLanguageFlag as string) ||
+        (req.headers["x-user-language-flag"] as string) ||
+        authenticatedUser?.nativeLanguageFlag ||
+        authenticatedUser?.native_language_flag;
 
       if (!id || !isUuid(id)) {
         // Return clean empty message list for non-UUID mock ids
@@ -182,13 +212,15 @@ export const chatController = {
       const messages = await Promise.all(
         result.rows.map(async (row) => {
           let translatedText = row.translated_text || row.original_text;
-          let targetLang = row.target_language || userLanguage || "English";
-          let targetFlag = row.target_language_flag || userLanguageFlag || "🇺🇸";
+          let targetLang = row.target_language || "English";
+          let targetFlag = row.target_language_flag || "🇺🇸";
 
           // If requesting participant has a specific signed-up language, translate directly into THEIR language on their screen
           if (userLanguage && row.original_text) {
             const senderLang = row.sender_language || "English";
             if (normalizeLanguageCode(senderLang) !== normalizeLanguageCode(userLanguage)) {
+              targetLang = userLanguage;
+              targetFlag = userLanguageFlag || "🌐";
               try {
                 const transRes = await translationService.translateText(
                   row.original_text,
@@ -196,7 +228,6 @@ export const chatController = {
                   senderLang
                 );
                 translatedText = transRes.translatedText;
-                targetLang = userLanguage;
                 targetFlag = transRes.targetLanguageFlag || userLanguageFlag || "🌐";
               } catch {}
             } else {
@@ -204,6 +235,9 @@ export const chatController = {
               targetLang = userLanguage;
               targetFlag = userLanguageFlag || "🇺🇸";
             }
+          } else if (userLanguage) {
+            targetLang = userLanguage;
+            targetFlag = userLanguageFlag || "🇺🇸";
           }
 
           return {
@@ -255,13 +289,33 @@ export const chatController = {
         senderLanguageFlag = "🇺🇸",
         recipientName = null,
         recipientAvatar = null,
-        targetLanguage = "Spanish",
-        targetLanguageFlag = "🇪🇸",
+        // The client supplies the recipient's language for direct chats. For
+        // group chats, reads are translated into each viewer's language.
+        targetLanguage = senderLanguage,
+        targetLanguageFlag = senderLanguageFlag,
         messageType = "text",
         audioUrl = null,
         audioDuration = null,
         mediaUrl = null,
       } = req.body;
+
+      // Resolve direct-chat language from the recipient profile rather than
+      // trusting a stale client value or conversation default.
+      let resolvedTargetLanguage = targetLanguage;
+      let resolvedTargetLanguageFlag = targetLanguageFlag;
+      if (isUuid(id)) {
+        const recipient = await pool.query(
+          `SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
+           UNION ALL
+           SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(name) = LOWER($2)
+           LIMIT 1`,
+          [id, recipientName || ""]
+        );
+        if (recipient.rows[0]?.native_language) {
+          resolvedTargetLanguage = recipient.rows[0].native_language;
+          resolvedTargetLanguageFlag = recipient.rows[0].native_language_flag || resolvedTargetLanguageFlag;
+        }
+      }
 
       if (!text && !audioUrl && !mediaUrl) {
         res.status(400).json({ error: "Message text or media is required." });
@@ -272,11 +326,11 @@ export const chatController = {
       let translatedText = cleanText;
 
       // Perform real-time AI neural translation if target language is different from sender
-      if (cleanText && targetLanguage && normalizeLanguageCode(targetLanguage) !== normalizeLanguageCode(senderLanguage)) {
+      if (cleanText && resolvedTargetLanguage && normalizeLanguageCode(resolvedTargetLanguage) !== normalizeLanguageCode(senderLanguage)) {
         try {
           const transResult = await translationService.translateText(
             cleanText,
-            targetLanguage,
+            resolvedTargetLanguage,
             senderLanguage
           );
           translatedText = transResult.translatedText;
@@ -290,8 +344,8 @@ export const chatController = {
 
       let convTitle = recipientName;
       let convAvatar = recipientAvatar || null;
-      let convLang = targetLanguage;
-      let convFlag = targetLanguageFlag;
+      let convLang = resolvedTargetLanguage;
+      let convFlag = resolvedTargetLanguageFlag;
 
       if (isUuid(convId)) {
         // Look up in contacts table
@@ -394,8 +448,8 @@ export const chatController = {
           senderLanguageFlag,
           cleanText,
           translatedText,
-          targetLanguage,
-          targetLanguageFlag,
+          resolvedTargetLanguage,
+          resolvedTargetLanguageFlag,
           messageType,
           audioUrl,
           audioDuration,

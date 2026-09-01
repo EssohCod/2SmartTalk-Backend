@@ -304,6 +304,19 @@ export async function initDb(): Promise<void> {
       );
     `);
 
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        user_email VARCHAR(255) NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        platform VARCHAR(20) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_push_tokens_email ON push_tokens(user_email);
+    `);
+
     // Create indexes for fast lookups
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);

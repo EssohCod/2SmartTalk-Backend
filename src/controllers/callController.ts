@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { translationService, normalizeLanguageCode } from "../services/translationService";
+import { sendExpoPushNotification } from "./notificationController";
 
 function isUuid(str: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
@@ -78,6 +79,29 @@ export const callController = {
 
       const sessionRow = sessionResult.rows[0];
 
+      const calleeUserResult = await pool.query(
+        `SELECT id, email FROM users
+         WHERE ($1::text IS NOT NULL AND (
+           LOWER(username) = LOWER($1) OR LOWER(username) = LOWER(REPLACE($1, '@', ''))
+         ))
+            OR LOWER(name) = LOWER($2)
+         LIMIT 1`,
+        [calleeUsername || null, cleanCallee]
+      );
+      const calleeUser = calleeUserResult.rows[0];
+      if (calleeUser?.email) {
+        try {
+          await sendExpoPushNotification(
+            calleeUser.email,
+            `Incoming ${callType === "video" ? "video" : "audio"} call`,
+            `${callerName} is calling you`,
+            { sessionId: sessionRow.id, callType, type: "incoming_call" }
+          );
+        } catch (pushError) {
+          console.error("CallController push delivery error:", pushError);
+        }
+      }
+
       // 2. Log initial outgoing call entry in calls history
       const callerUserId = (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null;
       await pool.query(
@@ -143,9 +167,11 @@ export const callController = {
       const result = await pool.query(
         `SELECT * FROM call_sessions
          WHERE status = 'ringing'
+           AND LOWER(callee_name) = LOWER($1)
            AND started_at >= NOW() - interval '45 seconds'
          ORDER BY started_at DESC
-         LIMIT 1`
+         LIMIT 1`,
+        [callee]
       );
 
       if (result.rows.length === 0) {
