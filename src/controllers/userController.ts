@@ -66,18 +66,17 @@ export const userController = {
         return;
       }
 
-      // Determine Member Since
+      // Determine Member Since using the actual month and year the user joined.
       let memberSince = userRow.member_since;
+      if (!memberSince && userRow.created_at) {
+        const createdAtDate = new Date(userRow.created_at);
+        memberSince = new Intl.DateTimeFormat("en-US", {
+          month: "long",
+          year: "numeric",
+        }).format(createdAtDate);
+      }
       if (!memberSince) {
-        if (userRow.created_at) {
-          const createdAtDate = new Date(userRow.created_at);
-          memberSince = new Intl.DateTimeFormat("en-US", {
-            month: "short",
-            year: "numeric",
-          }).format(createdAtDate);
-        } else {
-          memberSince = "May 2024";
-        }
+        memberSince = "May 2024";
       }
 
       // Default settings fallbacks if null

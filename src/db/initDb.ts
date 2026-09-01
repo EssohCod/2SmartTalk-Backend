@@ -32,7 +32,7 @@ export async function initDb(): Promise<void> {
         bio TEXT DEFAULT 'Connecting across cultures with 2SmartTalk 🌐',
         location VARCHAR(150) DEFAULT 'Global',
         live_translation_enabled BOOLEAN DEFAULT true,
-        member_since VARCHAR(100) DEFAULT 'May 2024',
+        member_since VARCHAR(100) DEFAULT NULL,
         settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb,
         subscription JSONB DEFAULT '{"plan": "Pro Annual", "status": "active", "renewalDate": "2027-05-15", "amount": "$99.99/yr"}'::jsonb,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -46,9 +46,14 @@ export async function initDb(): Promise<void> {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT 'Connecting across cultures with 2SmartTalk 🌐';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS location VARCHAR(150) DEFAULT 'Global';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS live_translation_enabled BOOLEAN DEFAULT true;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS member_since VARCHAR(100) DEFAULT 'May 2024';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS member_since VARCHAR(100) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription JSONB DEFAULT '{"plan": "Pro Annual", "status": "active", "renewalDate": "2027-05-15", "amount": "$99.99/yr"}'::jsonb;
+
+      -- Update any member_since that was set to static 'May 2024' or NULL to the user's actual join month and year
+      UPDATE users 
+      SET member_since = TO_CHAR(created_at, 'FMMonth YYYY')
+      WHERE (member_since = 'May 2024' OR member_since IS NULL) AND created_at IS NOT NULL;
     `);
 
     // 2. OTPs Table (Email verification, Password reset)

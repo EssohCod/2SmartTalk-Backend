@@ -94,9 +94,9 @@ export const authController = {
       const insertResult = await query<UserDbRow>(
         `INSERT INTO users (
           first_name, last_name, name, username, email, password_hash, 
-          gender, native_language, native_language_flag, is_email_verified
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false)
-        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_flag, is_email_verified, created_at`,
+          gender, native_language, native_language_flag, is_email_verified, member_since
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, TO_CHAR(NOW(), 'FMMonth YYYY'))
+        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_flag, is_email_verified, created_at, member_since`,
         [
           firstName.trim(),
           lastName.trim(),
