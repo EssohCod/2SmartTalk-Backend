@@ -62,13 +62,7 @@ export const userController = {
       }
 
       if (!userRow) {
-        // Fallback to most recent active user
-        const result = await query(`SELECT * FROM users ORDER BY created_at DESC LIMIT 1`);
-        if (result.rows.length > 0) userRow = result.rows[0];
-      }
-
-      if (!userRow) {
-        res.status(404).json({ error: "User profile not found." });
+        res.status(404).json({ error: "User profile not found. Please sign in." });
         return;
       }
 
