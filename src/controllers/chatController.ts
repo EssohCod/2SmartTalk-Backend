@@ -253,6 +253,8 @@ export const chatController = {
         senderAvatar = null,
         senderLanguage = "English",
         senderLanguageFlag = "🇺🇸",
+        recipientName = null,
+        recipientAvatar = null,
         targetLanguage = "Spanish",
         targetLanguageFlag = "🇪🇸",
         messageType = "text",
@@ -286,23 +288,69 @@ export const chatController = {
       let convId = id;
       let convExists = false;
 
+      let convTitle = recipientName;
+      let convAvatar = recipientAvatar || null;
+      let convLang = targetLanguage;
+      let convFlag = targetLanguageFlag;
+
       if (isUuid(convId)) {
+        // Look up in contacts table
+        const cLookup = await pool.query(
+          "SELECT name, avatar_url, native_language, native_language_flag FROM contacts WHERE id = $1 LIMIT 1",
+          [convId]
+        );
+        if (cLookup.rows.length > 0) {
+          if (!convTitle) convTitle = cLookup.rows[0].name;
+          if (!convAvatar) convAvatar = cLookup.rows[0].avatar_url;
+          if (!convLang) convLang = cLookup.rows[0].native_language;
+          if (!convFlag) convFlag = cLookup.rows[0].native_language_flag;
+        } else {
+          // Look up in users table
+          const uLookup = await pool.query(
+            "SELECT name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
+            [convId]
+          );
+          if (uLookup.rows.length > 0) {
+            if (!convTitle) convTitle = uLookup.rows[0].name;
+            if (!convAvatar) convAvatar = uLookup.rows[0].avatar_url;
+            if (!convLang) convLang = uLookup.rows[0].native_language;
+            if (!convFlag) convFlag = uLookup.rows[0].native_language_flag;
+          }
+        }
+
+        if (!convTitle) convTitle = senderName || "Direct Chat";
+
         const check = await pool.query("SELECT id FROM conversations WHERE id = $1", [convId]);
         if (check.rows.length > 0) {
           convExists = true;
+          // Update conversation title and last message
+          await pool.query(
+            `UPDATE conversations
+             SET title = COALESCE($1, title),
+                 avatar_url = COALESCE($2, avatar_url),
+                 last_message = $3,
+                 last_message_time = NOW()
+             WHERE id = $4`,
+            [convTitle, convAvatar, cleanText, convId]
+          );
         } else {
-          // If valid UUID (e.g. contact ID) but doesn't exist yet, insert with this exact ID
+          // Insert with this exact contact/conversation ID
           await pool.query(
             `INSERT INTO conversations (
-              id, title, type, recipient_lang, recipient_lang_flag, last_message, last_message_time
-            ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
-            ON CONFLICT (id) DO UPDATE SET last_message = EXCLUDED.last_message, last_message_time = NOW()`,
+              id, title, type, avatar_url, recipient_lang, recipient_lang_flag, last_message, last_message_time
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+              title = COALESCE(EXCLUDED.title, conversations.title),
+              avatar_url = COALESCE(EXCLUDED.avatar_url, conversations.avatar_url),
+              last_message = EXCLUDED.last_message,
+              last_message_time = NOW()`,
             [
               convId,
-              targetLanguage ? `${senderName} & Partner` : (senderName || "Direct Chat"),
+              convTitle,
               "direct",
-              targetLanguage,
-              targetLanguageFlag,
+              convAvatar,
+              convLang || "English",
+              convFlag || "🌐",
               cleanText,
             ]
           );
@@ -313,13 +361,14 @@ export const chatController = {
       if (!convExists) {
         const createConv = await pool.query(
           `INSERT INTO conversations (
-            title, type, recipient_lang, recipient_lang_flag, last_message, last_message_time
-          ) VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id`,
+            title, type, avatar_url, recipient_lang, recipient_lang_flag, last_message, last_message_time
+          ) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id`,
           [
-            senderName || "Direct Chat",
+            convTitle || senderName || "Direct Chat",
             "direct",
-            targetLanguage,
-            targetLanguageFlag,
+            convAvatar,
+            convLang || "English",
+            convFlag || "🌐",
             cleanText,
           ]
         );
