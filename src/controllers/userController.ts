@@ -72,12 +72,19 @@ export const userController = {
         return;
       }
 
-      // Format Member Since (e.g. "May 2024")
-      const createdAtDate = userRow.created_at ? new Date(userRow.created_at) : new Date();
-      const memberSince = new Intl.DateTimeFormat("en-US", {
-        month: "short",
-        year: "numeric",
-      }).format(createdAtDate);
+      // Determine Member Since
+      let memberSince = userRow.member_since;
+      if (!memberSince) {
+        if (userRow.created_at) {
+          const createdAtDate = new Date(userRow.created_at);
+          memberSince = new Intl.DateTimeFormat("en-US", {
+            month: "short",
+            year: "numeric",
+          }).format(createdAtDate);
+        } else {
+          memberSince = "May 2024";
+        }
+      }
 
       // Default settings fallbacks if null
       const defaultSettings: UserSettingsSchema = {
@@ -192,6 +199,7 @@ export const userController = {
         bio,
         location,
         avatarUrl,
+        memberSince: newMemberSince,
       } = req.body;
 
       let cleanUsername = username ? username.replace(/^@/, "").trim() : undefined;
@@ -225,8 +233,9 @@ export const userController = {
           bio = COALESCE($7, bio),
           location = COALESCE($8, location),
           avatar_url = COALESCE($9, avatar_url),
+          member_since = COALESCE($10, member_since),
           updated_at = NOW()
-        WHERE id = $10 OR LOWER(email) = LOWER($11)
+        WHERE id = $11 OR LOWER(email) = LOWER($12)
         RETURNING *;
       `;
 
@@ -240,6 +249,7 @@ export const userController = {
         bio || null,
         location || null,
         avatarUrl || null,
+        newMemberSince || null,
         userId || "00000000-0000-0000-0000-000000000000",
         email || "",
       ]);
@@ -250,7 +260,7 @@ export const userController = {
       }
 
       const updated = result.rows[0];
-      const memberSince = new Intl.DateTimeFormat("en-US", {
+      const memberSince = updated.member_since || new Intl.DateTimeFormat("en-US", {
         month: "short",
         year: "numeric",
       }).format(new Date(updated.created_at || Date.now()));
