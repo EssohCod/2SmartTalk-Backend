@@ -201,11 +201,13 @@ export const chatController = {
   },
 
   /**
-   * 3. Get Messages for a Conversation
+   * 3. Get Messages for a Conversation (With Dynamic Participant Language Translation)
    */
   async getMessages(req: Request, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
+      const userLanguage = (req.query.userLanguage as string) || (req.headers["x-user-language"] as string);
+      const userLanguageFlag = (req.query.userLanguageFlag as string) || (req.headers["x-user-language-flag"] as string);
 
       if (!id || !isUuid(id)) {
         // Return clean empty message list for non-UUID mock ids
@@ -222,26 +224,55 @@ export const chatController = {
         [id]
       );
 
-      const messages = result.rows.map((row) => ({
-        id: row.id,
-        conversationId: row.conversation_id,
-        senderId: row.sender_id,
-        senderName: row.sender_name,
-        senderUsername: row.sender_username,
-        senderAvatar: row.sender_avatar,
-        senderLanguage: row.sender_language || "English",
-        senderLanguageFlag: row.sender_language_flag || "🇺🇸",
-        text: row.original_text,
-        translatedText: row.translated_text || row.original_text,
-        targetLanguage: row.target_language,
-        targetLanguageFlag: row.target_language_flag,
-        messageType: row.message_type || "text",
-        audioUrl: row.audio_url,
-        audioDuration: row.audio_duration,
-        mediaUrl: row.media_url,
-        timestamp: new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        createdAt: row.created_at,
-      }));
+      const messages = await Promise.all(
+        result.rows.map(async (row) => {
+          let translatedText = row.translated_text || row.original_text;
+          let targetLang = row.target_language || userLanguage || "English";
+          let targetFlag = row.target_language_flag || userLanguageFlag || "🇺🇸";
+
+          // If requesting participant has a specific signed-up language, translate directly into THEIR language on their screen
+          if (userLanguage && row.original_text) {
+            const senderLang = row.sender_language || "English";
+            if (normalizeLanguageCode(senderLang) !== normalizeLanguageCode(userLanguage)) {
+              try {
+                const transRes = await translationService.translateText(
+                  row.original_text,
+                  userLanguage,
+                  senderLang
+                );
+                translatedText = transRes.translatedText;
+                targetLang = userLanguage;
+                targetFlag = transRes.targetLanguageFlag || userLanguageFlag || "🌐";
+              } catch {}
+            } else {
+              translatedText = row.original_text;
+              targetLang = userLanguage;
+              targetFlag = userLanguageFlag || "🇺🇸";
+            }
+          }
+
+          return {
+            id: row.id,
+            conversationId: row.conversation_id,
+            senderId: row.sender_id,
+            senderName: row.sender_name,
+            senderUsername: row.sender_username,
+            senderAvatar: row.sender_avatar,
+            senderLanguage: row.sender_language || "English",
+            senderLanguageFlag: row.sender_language_flag || "🇺🇸",
+            text: row.original_text,
+            translatedText,
+            targetLanguage: targetLang,
+            targetLanguageFlag: targetFlag,
+            messageType: row.message_type || "text",
+            audioUrl: row.audio_url,
+            audioDuration: row.audio_duration,
+            mediaUrl: row.media_url,
+            timestamp: new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            createdAt: row.created_at,
+          };
+        })
+      );
 
       res.status(200).json({
         success: true,
