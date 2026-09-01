@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { groupController } from "../controllers/groupController";
+import { optionalAuthenticate } from "../middlewares/authMiddleware";
 
 const router = Router();
+
+router.use(optionalAuthenticate);
 
 // GET /api/groups - List all groups
 router.get("/", groupController.getGroups);

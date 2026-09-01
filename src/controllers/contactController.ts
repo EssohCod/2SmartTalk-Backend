@@ -3,20 +3,26 @@ import { pool } from "../config/db";
 
 export const contactController = {
   /**
-   * 1. Get All Contacts
+   * 1. Get All Contacts (strictly filtered by authenticated user)
    */
   async getContacts(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
-      let query = "SELECT * FROM contacts ORDER BY is_favorite DESC, name ASC";
-      let params: any[] = [];
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.query.userId as string);
 
-      if (user && user.id) {
-        query = "SELECT * FROM contacts WHERE user_id = $1 OR user_id IS NULL ORDER BY is_favorite DESC, name ASC";
-        params = [user.id];
+      if (!userId) {
+        res.status(200).json({
+          success: true,
+          count: 0,
+          contacts: [],
+        });
+        return;
       }
 
-      const result = await pool.query(query, params);
+      const result = await pool.query(
+        "SELECT * FROM contacts WHERE user_id = $1 ORDER BY is_favorite DESC, name ASC",
+        [userId]
+      );
 
       const contacts = result.rows.map((row) => ({
         id: row.id,
@@ -52,6 +58,7 @@ export const contactController = {
   async addContact(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || req.body.userId;
       const {
         name,
         username,
@@ -74,7 +81,7 @@ export const contactController = {
 
       // Check if user exists in the platform
       const userCheck = await pool.query(
-        "SELECT id, avatar_url, native_language, native_language_flag FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
+        "SELECT id, avatar_url, native_language, native_language_flag, bio, location FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
         [cleanUsername]
       );
 
@@ -82,6 +89,37 @@ export const contactController = {
       const resolvedAvatar = avatarUrl || (userCheck.rows.length > 0 ? userCheck.rows[0].avatar_url : null);
       const resolvedLang = nativeLanguage || (userCheck.rows.length > 0 ? userCheck.rows[0].native_language : "English");
       const resolvedFlag = nativeLanguageFlag || (userCheck.rows.length > 0 ? userCheck.rows[0].native_language_flag : "🇺🇸");
+      const resolvedBio = bio || (userCheck.rows.length > 0 ? userCheck.rows[0].bio : "");
+      const resolvedLoc = location || (userCheck.rows.length > 0 ? userCheck.rows[0].location : "Global");
+
+      // Prevent duplicate contacts
+      if (userId) {
+        const existing = await pool.query(
+          `SELECT * FROM contacts 
+           WHERE user_id = $1 AND (LOWER(username) = LOWER($2) OR (contact_user_id IS NOT NULL AND contact_user_id = $3))`,
+          [userId, `@${cleanUsername}`, contactUserId]
+        );
+
+        if (existing.rows.length > 0) {
+          const row = existing.rows[0];
+          res.status(200).json({
+            success: true,
+            message: "Contact already in your contacts list.",
+            contact: {
+              id: row.id,
+              name: row.name,
+              username: row.username,
+              avatarUrl: row.avatar_url,
+              language: row.native_language,
+              flag: row.native_language_flag,
+              isOnline: row.is_online,
+              isFavorite: row.is_favorite,
+              bio: row.bio,
+            },
+          });
+          return;
+        }
+      }
 
       const insertResult = await pool.query(
         `INSERT INTO contacts (
@@ -92,7 +130,7 @@ export const contactController = {
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
         ) RETURNING *`,
         [
-          user ? user.id : null,
+          userId || null,
           contactUserId,
           cleanName,
           `@${cleanUsername}`,
@@ -101,10 +139,10 @@ export const contactController = {
           resolvedAvatar,
           resolvedLang,
           resolvedFlag,
-          location.trim(),
-          true, // newly added demo online
+          resolvedLoc,
+          true,
           false,
-          bio.trim(),
+          resolvedBio,
         ]
       );
 
@@ -142,8 +180,20 @@ export const contactController = {
   async deleteContact(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
 
-      const deleteResult = await pool.query("DELETE FROM contacts WHERE id = $1 RETURNING id", [id]);
+      let query = "DELETE FROM contacts WHERE id = $1";
+      const params: any[] = [id];
+
+      if (userId) {
+        query += " AND user_id = $2";
+        params.push(userId);
+      }
+
+      query += " RETURNING id";
+
+      const deleteResult = await pool.query(query, params);
 
       if (deleteResult.rowCount === 0) {
         res.status(404).json({ error: "Contact not found." });
@@ -162,12 +212,11 @@ export const contactController = {
   },
 
   /**
-   * 4. Get Contact By ID (Profile Details)
+   * 4. Get Contact By ID
    */
   async getContactById(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-
       const result = await pool.query("SELECT * FROM contacts WHERE id = $1", [id]);
 
       if (result.rows.length === 0) {
@@ -203,40 +252,34 @@ export const contactController = {
   },
 
   /**
-   * 5. Search Registered Users to Add
+   * 5. Search Registered Users by username or name
    */
   async searchUsers(req: Request, res: Response): Promise<void> {
     try {
-      const query = (req.query.q as string || "").trim().toLowerCase();
+      const user = (req as any).user;
+      const currentUserId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || "00000000-0000-0000-0000-000000000000";
+      const query = (req.query.q as string || req.query.username as string || "").trim().toLowerCase();
 
-      if (!query || query.length < 2) {
-        // Return latest registered users as suggestions
-        const recent = await pool.query(
-          "SELECT id, name, username, email, avatar_url, native_language, native_language_flag FROM users ORDER BY created_at DESC LIMIT 10"
-        );
-        res.status(200).json({
-          success: true,
-          users: recent.rows.map((u) => ({
-            id: u.id,
-            name: u.name,
-            username: `@${u.username}`,
-            email: u.email,
-            avatarUrl: u.avatar_url,
-            language: u.native_language || "English",
-            flag: u.native_language_flag || "🇺🇸",
-          })),
-        });
+      if (!query || query.length < 1) {
+        res.status(200).json({ success: true, users: [] });
         return;
       }
 
       const cleanQuery = query.replace(/^@/, "");
 
       const result = await pool.query(
-        `SELECT id, name, username, email, avatar_url, native_language, native_language_flag
-         FROM users
-         WHERE LOWER(username) LIKE $1 OR LOWER(name) LIKE $1 OR LOWER(email) LIKE $1
-         LIMIT 15`,
-        [`%${cleanQuery}%`]
+        `SELECT u.id, u.name, u.username, u.email, u.avatar_url, u.native_language, u.native_language_flag, u.bio,
+                EXISTS(
+                  SELECT 1 FROM contacts c 
+                  WHERE c.user_id = $2 
+                    AND (c.contact_user_id = u.id OR LOWER(c.username) = LOWER('@' || u.username))
+                ) as is_added
+         FROM users u
+         WHERE u.id != $2 
+           AND (LOWER(u.username) LIKE $1 OR LOWER(u.name) LIKE $1)
+         ORDER BY (LOWER(u.username) = LOWER($3)) DESC, u.created_at DESC
+         LIMIT 20`,
+        [`%${cleanQuery}%`, currentUserId, cleanQuery]
       );
 
       res.status(200).json({
@@ -248,13 +291,94 @@ export const contactController = {
           username: `@${u.username}`,
           email: u.email,
           avatarUrl: u.avatar_url,
-          language: u.native_language || "English",
-          flag: u.native_language_flag || "🇺🇸",
+          speaks: u.native_language || "English",
+          speaksFlag: u.native_language_flag || "🇺🇸",
+          hears: "English",
+          hearsFlag: "🇺🇸",
+          bio: u.bio || "2SmartTalk member",
+          isAdded: Boolean(u.is_added),
+          isOnline: true,
         })),
       });
     } catch (error: any) {
       console.error("ContactController.searchUsers error:", error);
       res.status(500).json({ error: "Search failed." });
+    }
+  },
+
+  /**
+   * 6. "People You May Know" - Algorithmic Suggestions based on Language Match
+   */
+  async getSuggestions(req: Request, res: Response): Promise<void> {
+    try {
+      const user = (req as any).user;
+      const currentUserId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
+
+      let userLanguage = user?.nativeLanguage || (req.headers["x-user-language"] as string);
+
+      // If userLanguage is not in token, look up the requesting user's language
+      if (!userLanguage && currentUserId) {
+        const langRes = await pool.query(
+          "SELECT native_language FROM users WHERE id = $1",
+          [currentUserId]
+        );
+        if (langRes.rows.length > 0) {
+          userLanguage = langRes.rows[0].native_language;
+        }
+      }
+
+      const targetLang = (userLanguage || "English").trim();
+
+      let query = `
+        SELECT u.id, u.name, u.username, u.email, u.avatar_url, u.native_language, u.native_language_flag, u.bio,
+               (LOWER(u.native_language) = LOWER($1)) as is_same_language
+        FROM users u
+      `;
+      const params: any[] = [targetLang];
+
+      if (currentUserId) {
+        query += `
+          WHERE u.id != $2 
+            AND u.id NOT IN (
+              SELECT contact_user_id FROM contacts WHERE user_id = $2 AND contact_user_id IS NOT NULL
+            )
+            AND LOWER('@' || u.username) NOT IN (
+              SELECT LOWER(username) FROM contacts WHERE user_id = $2
+            )
+        `;
+        params.push(currentUserId);
+      }
+
+      query += `
+        ORDER BY (LOWER(u.native_language) = LOWER($1)) DESC, u.created_at DESC
+        LIMIT 10
+      `;
+
+      const result = await pool.query(query, params);
+
+      const suggestions = result.rows.map((u) => ({
+        id: u.id,
+        name: u.name,
+        username: `@${u.username}`,
+        avatarUrl: u.avatar_url,
+        speaks: u.native_language || "English",
+        speaksFlag: u.native_language_flag || "🇺🇸",
+        hears: "English",
+        hearsFlag: "🇺🇸",
+        isSameLanguage: Boolean(u.is_same_language),
+        mutualCount: u.is_same_language ? 5 : 3,
+        bio: u.bio || `Speaks ${u.native_language || "English"} • 2SmartTalk verified`,
+        isOnline: true,
+      }));
+
+      res.status(200).json({
+        success: true,
+        count: suggestions.length,
+        suggestions,
+      });
+    } catch (error: any) {
+      console.error("ContactController.getSuggestions error:", error);
+      res.status(500).json({ error: "Failed to load suggestions." });
     }
   },
 };

@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { meetingController } from "../controllers/meetingController";
+import { optionalAuthenticate } from "../middlewares/authMiddleware";
 
 const router = Router();
+
+router.use(optionalAuthenticate);
 
 // Get upcoming scheduled meetings
 router.get("/upcoming", meetingController.getUpcomingMeetings);

@@ -7,8 +7,24 @@ export const groupController = {
    */
   async getGroups(req: Request, res: Response): Promise<void> {
     try {
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.query.userId as string);
+      const email = user?.email || (req.headers["x-user-email"] as string) || (req.query.email as string);
+
+      if (!userId && !email) {
+        res.status(200).json({
+          success: true,
+          count: 0,
+          groups: [],
+        });
+        return;
+      }
+
       const result = await pool.query(
-        "SELECT * FROM groups ORDER BY created_at DESC"
+        `SELECT * FROM groups 
+         WHERE created_by = $1 OR LOWER(created_by_email) = LOWER($2) OR members::text ILIKE $3
+         ORDER BY created_at DESC`,
+        [userId || "00000000-0000-0000-0000-000000000000", email || "", `%${email || userId}%`]
       );
 
       const groups = result.rows.map((row) => ({

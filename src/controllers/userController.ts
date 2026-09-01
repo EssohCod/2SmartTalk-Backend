@@ -551,21 +551,37 @@ export const userController = {
    */
   async getDashboardStats(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      // 1. Meeting Today count
-      const meetingsResult = await query(
-        `SELECT COUNT(*) as count FROM meetings WHERE status = 'upcoming' OR status = 'live'`
-      );
-      const totalMeetings = parseInt(meetingsResult.rows[0]?.count || "0", 10);
-      const meetingsToday = totalMeetings > 0 ? totalMeetings : 12;
+      const userId =
+        req.user?.userId ||
+        (req.headers["x-user-id"] as string) ||
+        (req.query.userId as string);
 
-      // 2. People Online count (from contacts and users)
-      const contactsOnline = await query(
-        `SELECT COUNT(*) as count FROM contacts WHERE is_online = true`
-      );
-      const onlineContactsCount = parseInt(contactsOnline.rows[0]?.count || "0", 10);
-      const usersCount = await query(`SELECT COUNT(*) as count FROM users`);
-      const totalUsers = parseInt(usersCount.rows[0]?.count || "0", 10);
-      const peopleOnline = Math.max(onlineContactsCount, totalUsers > 0 ? totalUsers * 12 + 4 : 40);
+      const email =
+        req.user?.email ||
+        (req.headers["x-user-email"] as string) ||
+        (req.query.email as string);
+
+      // 1. Meeting Today count strictly for the requesting user
+      let meetingsToday = 0;
+      if (userId || email) {
+        const meetingsResult = await query(
+          `SELECT COUNT(*) as count FROM meetings 
+           WHERE (status = 'upcoming' OR status = 'live')
+             AND (host_id = $1 OR LOWER(host_email) = LOWER($2) OR participants::text ILIKE $3)`,
+          [userId || "00000000-0000-0000-0000-000000000000", email || "", `%${email || userId}%`]
+        );
+        meetingsToday = parseInt(meetingsResult.rows[0]?.count || "0", 10);
+      }
+
+      // 2. People Online count (ONLY the particular user's contacts that are online)
+      let peopleOnline = 0;
+      if (userId) {
+        const contactsOnline = await query(
+          `SELECT COUNT(*) as count FROM contacts WHERE user_id = $1 AND is_online = true`,
+          [userId]
+        );
+        peopleOnline = parseInt(contactsOnline.rows[0]?.count || "0", 10);
+      }
 
       // 3. Call Quality Rating
       const callQuality = "4.9";
@@ -576,7 +592,7 @@ export const userController = {
           meetingsToday,
           peopleOnline,
           callQuality,
-          meetingLabel: meetingsToday === 1 ? "Meeting Today" : "Meeting Today",
+          meetingLabel: meetingsToday === 1 ? "Meeting Today" : "Meetings Today",
         },
       });
     } catch (error: any) {
@@ -584,10 +600,10 @@ export const userController = {
       res.status(500).json({
         success: true,
         stats: {
-          meetingsToday: 12,
-          peopleOnline: 40,
+          meetingsToday: 0,
+          peopleOnline: 0,
           callQuality: "4.9",
-          meetingLabel: "Meeting Today",
+          meetingLabel: "Meetings Today",
         },
       });
     }

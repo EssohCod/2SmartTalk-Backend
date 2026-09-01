@@ -79,16 +79,18 @@ export const callController = {
       const sessionRow = sessionResult.rows[0];
 
       // 2. Log initial outgoing call entry in calls history
+      const callerUserId = (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null;
       await pool.query(
         `INSERT INTO calls (
-          contact_name, contact_username, contact_avatar,
+          user_id, contact_name, contact_username, contact_avatar,
           contact_language, contact_language_flag, call_type, call_direction,
           call_status, duration, is_group, group_name, started_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, 'outgoing',
-          'completed', 'Calling...', $7, $8, NOW()
+          $1, $2, $3, $4, $5, $6, $7, 'outgoing',
+          'completed', 'Calling...', $8, $9, NOW()
         )`,
         [
+          callerUserId,
           cleanCallee,
           calleeUsername || `@${cleanCallee.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
           calleeAvatar,
@@ -464,118 +466,36 @@ export const callController = {
    */
   async getCalls(req: Request, res: Response): Promise<void> {
     try {
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.query.userId as string);
       const { direction, search } = req.query;
 
-      let query = "SELECT * FROM calls";
-      const params: any[] = [];
-      const conditions: string[] = [];
+      if (!userId) {
+        res.status(200).json({
+          success: true,
+          count: 0,
+          calls: [],
+        });
+        return;
+      }
+
+      let query = "SELECT * FROM calls WHERE user_id = $1";
+      const params: any[] = [userId];
 
       if (direction && typeof direction === "string" && direction !== "all") {
         params.push(direction.toLowerCase());
-        conditions.push(`LOWER(call_direction) = $${params.length}`);
+        query += ` AND LOWER(call_direction) = $${params.length}`;
       }
 
       if (search && typeof search === "string" && search.trim()) {
         params.push(`%${search.trim().toLowerCase()}%`);
-        conditions.push(`(LOWER(contact_name) LIKE $${params.length} OR LOWER(contact_username) LIKE $${params.length} OR LOWER(contact_language) LIKE $${params.length})`);
-      }
-
-      if (conditions.length > 0) {
-        query += " WHERE " + conditions.join(" AND ");
+        query += ` AND (LOWER(contact_name) LIKE $${params.length} OR LOWER(contact_username) LIKE $${params.length} OR LOWER(contact_language) LIKE $${params.length})`;
       }
 
       query += " ORDER BY started_at DESC";
 
       const result = await pool.query(query, params);
-
-      // If calls table is empty, seed initial data for demonstration
-      if (result.rows.length === 0 && !direction && !search) {
-        const seedCalls = [
-          {
-            name: "Sarah Johnson",
-            username: "@sarahj",
-            lang: "Russian",
-            flag: "🇷🇺",
-            type: "video",
-            dir: "outgoing",
-            duration: "14 mins 28 secs",
-          },
-          {
-            name: "Alex Martin",
-            username: "@alexmartin",
-            lang: "Russian",
-            flag: "🇷🇺",
-            type: "audio",
-            dir: "missed",
-            duration: "Missed Call (0s)",
-          },
-          {
-            name: "Jessica Brown",
-            username: "@jessicab",
-            lang: "French",
-            flag: "🇫🇷",
-            type: "video",
-            dir: "incoming",
-            duration: "26 mins 10 secs",
-          },
-          {
-            name: "David Williams",
-            username: "@davidw",
-            lang: "Spanish",
-            flag: "🇪🇸",
-            type: "audio",
-            dir: "outgoing",
-            duration: "08 mins 45 secs",
-          },
-          {
-            name: "Michael Scott",
-            username: "@mscott",
-            lang: "German",
-            flag: "🇩🇪",
-            type: "video",
-            dir: "incoming",
-            duration: "45 mins 02 secs",
-          },
-          {
-            name: "Tech Team Sync",
-            username: "@team_sync",
-            lang: "French",
-            flag: "🇫🇷",
-            type: "video",
-            dir: "missed",
-            duration: "Missed Group Video (0s)",
-            isGroup: true,
-          },
-        ];
-
-        for (const c of seedCalls) {
-          await pool.query(
-            `INSERT INTO calls (
-              contact_name, contact_username, contact_language, contact_language_flag,
-              call_type, call_direction, duration, is_group, started_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() - interval '1 hour')`,
-            [
-              c.name,
-              c.username,
-              c.lang,
-              c.flag,
-              c.type,
-              c.dir,
-              c.duration,
-              c.isGroup || false,
-            ]
-          );
-        }
-      }
-
-      const refreshedResult = await pool.query(
-        direction && typeof direction === "string" && direction !== "all"
-          ? "SELECT * FROM calls WHERE LOWER(call_direction) = $1 ORDER BY started_at DESC"
-          : "SELECT * FROM calls ORDER BY started_at DESC",
-        direction && typeof direction === "string" && direction !== "all" ? [direction.toLowerCase()] : []
-      );
-
-      const formatted = formatCallRows(refreshedResult.rows);
+      const formatted = formatCallRows(result.rows);
 
       res.status(200).json({
         success: true,
@@ -595,6 +515,7 @@ export const callController = {
   async logCall(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
+      const callerUserId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || null;
       const {
         contactName,
         contactUsername = `@${contactName?.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
@@ -622,7 +543,7 @@ export const callController = {
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()
         ) RETURNING *`,
         [
-          user ? user.id : null,
+          callerUserId,
           contactName.trim(),
           contactUsername.trim(),
           contactAvatar,

@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { callController } from "../controllers/callController";
+import { optionalAuthenticate } from "../middlewares/authMiddleware";
 
 const router = Router();
+
+router.use(optionalAuthenticate);
 
 // 1. Call Signaling & Real-time Session Endpoints
 router.post("/initiate", callController.initiateCall);

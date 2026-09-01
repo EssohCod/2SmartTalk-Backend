@@ -13,6 +13,8 @@ export const chatController = {
   async getConversations(req: Request, res: Response): Promise<void> {
     try {
       const typeFilter = req.query.type as string; // 'direct' | 'group' | 'all'
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
 
       let query = "SELECT * FROM conversations";
       const params: any[] = [];
@@ -24,66 +26,19 @@ export const chatController = {
 
       query += " ORDER BY last_message_time DESC";
 
-      const result = await pool.query(query, params);
-
-      // If conversations table is empty, seed initial conversations
-      if (result.rows.length === 0 && !typeFilter) {
-        const seedConversations = [
-          {
-            title: "Sarah Johnson",
-            type: "direct",
-            lang: "Russian",
-            flag: "🇷🇺",
-            lastMsg: "Thanks! See you on the call.",
-            unread: 2,
-          },
-          {
-            title: "Maria Santos",
-            type: "direct",
-            lang: "Filipino (Tagalog)",
-            flag: "🇵🇭",
-            lastMsg: "Salamat! Makakausap kita mamaya.",
-            unread: 1,
-          },
-          {
-            title: "Team Sync",
-            type: "group",
-            lang: "Global",
-            flag: "🌐",
-            lastMsg: "Alex: I've shared the meeting notes.",
-            unread: 5,
-          },
-          {
-            title: "Client Call",
-            type: "direct",
-            lang: "Spanish",
-            flag: "🇪🇸",
-            lastMsg: "Perfect, thank you!",
-            unread: 1,
-          },
-        ];
-
-        for (const c of seedConversations) {
-          await pool.query(
-            `INSERT INTO conversations (
-              title, type, recipient_lang, recipient_lang_flag, last_message, unread_count, last_message_time
-            ) VALUES ($1, $2, $3, $4, $5, $6, NOW() - interval '10 minutes')`,
-            [c.title, c.type, c.lang, c.flag, c.lastMsg, c.unread]
-          );
-        }
-      }
-
-      const refreshedResult = await pool.query(
-        typeFilter && (typeFilter === "direct" || typeFilter === "group")
-          ? "SELECT * FROM conversations WHERE type = $1 ORDER BY last_message_time DESC"
-          : "SELECT * FROM conversations ORDER BY last_message_time DESC",
-        typeFilter && (typeFilter === "direct" || typeFilter === "group") ? [typeFilter] : []
-      );
+      const refreshedResult = await pool.query(query, params);
 
       // Also retrieve groups from `groups` table to ensure every group created shows up under the Groups tab
       let groupRows: any[] = [];
       if (!typeFilter || typeFilter === "group" || typeFilter === "all") {
-        const groupsRes = await pool.query("SELECT * FROM groups ORDER BY created_at DESC");
+        let groupQuery = "SELECT * FROM groups";
+        const groupParams: any[] = [];
+        if (userId) {
+          groupQuery += " WHERE created_by = $1 OR members::text ILIKE $2";
+          groupParams.push(userId, `%${userId}%`);
+        }
+        groupQuery += " ORDER BY created_at DESC";
+        const groupsRes = await pool.query(groupQuery, groupParams);
         groupRows = groupsRes.rows;
       }
 

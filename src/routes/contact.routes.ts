@@ -1,12 +1,19 @@
 import { Router } from "express";
 import { contactController } from "../controllers/contactController";
+import { optionalAuthenticate } from "../middlewares/authMiddleware";
 
 const router = Router();
 
-// GET /api/contacts/search - Search registered users
+// Apply optional authentication so req.user is populated when Bearer token or headers are sent
+router.use(optionalAuthenticate);
+
+// GET /api/contacts/search - Search registered users by username/name
 router.get("/search", contactController.searchUsers);
 
-// GET /api/contacts - List all contacts
+// GET /api/contacts/suggestions - "People You May Know" algorithm based on language
+router.get("/suggestions", contactController.getSuggestions);
+
+// GET /api/contacts - List all contacts for the current user
 router.get("/", contactController.getContacts);
 
 // POST /api/contacts - Add a new contact

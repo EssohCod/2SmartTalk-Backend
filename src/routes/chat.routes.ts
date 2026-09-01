@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { chatController } from "../controllers/chatController";
+import { optionalAuthenticate } from "../middlewares/authMiddleware";
 
 const router = Router();
+
+router.use(optionalAuthenticate);
 
 // GET /api/chats - Get all conversations (supports ?type=direct|group|all)
 router.get("/", chatController.getConversations);
