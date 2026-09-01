@@ -271,7 +271,7 @@ export const authController = {
   async signIn(req: Request, res: Response): Promise<void> {
     try {
       const { email, password } = req.body;
-      const cleanIdentifier = email.toLowerCase().trim();
+      const cleanIdentifier = email.toLowerCase().trim().replace(/^@/, "");
 
       // Find user by email OR username
       const userResult = await query<UserDbRow>(
