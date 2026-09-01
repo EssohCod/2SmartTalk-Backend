@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { query } from "../config/db";
 import { otpService } from "../services/otpService";
 import { tokenService } from "../services/tokenService";
+import { emailService } from "../services/emailService";
 
 export interface UserDbRow {
   id: string;
@@ -166,6 +167,27 @@ export const authController = {
       }
 
       const user = updateResult.rows[0];
+
+      // 1. Send Welcome Email to the user asynchronously
+      emailService.sendWelcomeEmail(
+        user.email,
+        user.name || user.first_name || "User"
+      ).catch((e) => console.warn("Failed to send welcome email:", e));
+
+      // 2. Create Welcome Notification in the database
+      query(
+        `INSERT INTO notifications (
+          user_id, user_email, category, title, description,
+          is_unread, icon_name, icon_bg_color, icon_color,
+          action_type, action_label, created_at, updated_at
+        ) VALUES (
+          $1, $2, 'system', 'Welcome to 2SmartTalk! 🎉',
+          'Your account has been successfully verified. You can now make real-time translated voice and video calls across 150+ languages.',
+          true, 'sparkles', '#EFF6FF', '#3B82F6',
+          'view_info', 'Get Started', NOW(), NOW()
+        )`,
+        [user.id, user.email]
+      ).catch((e) => console.warn("Failed to create welcome notification:", e));
 
       // Generate JWT auth tokens
       const tokenPayload = {
