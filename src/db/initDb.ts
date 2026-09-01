@@ -28,9 +28,25 @@ export async function initDb(): Promise<void> {
         native_language_flag VARCHAR(10) DEFAULT '🇺🇸',
         is_email_verified BOOLEAN DEFAULT false,
         avatar_url TEXT DEFAULT NULL,
+        phone VARCHAR(50) DEFAULT NULL,
+        bio TEXT DEFAULT 'Connecting across cultures with 2SmartTalk 🌐',
+        location VARCHAR(150) DEFAULT 'Global',
+        live_translation_enabled BOOLEAN DEFAULT true,
+        settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb,
+        subscription JSONB DEFAULT '{"plan": "Pro Annual", "status": "active", "renewalDate": "2027-05-15", "amount": "$99.99/yr"}'::jsonb,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+    `);
+
+    // Ensure columns exist on existing users table
+    await client.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT 'Connecting across cultures with 2SmartTalk 🌐';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS location VARCHAR(150) DEFAULT 'Global';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS live_translation_enabled BOOLEAN DEFAULT true;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription JSONB DEFAULT '{"plan": "Pro Annual", "status": "active", "renewalDate": "2027-05-15", "amount": "$99.99/yr"}'::jsonb;
     `);
 
     // 2. OTPs Table (Email verification, Password reset)

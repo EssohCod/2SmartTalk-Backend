@@ -8,6 +8,7 @@ import contactRoutes from "./contact.routes";
 import groupRoutes from "./group.routes";
 import chatRoutes from "./chat.routes";
 import callRoutes from "./call.routes";
+import userRoutes from "./user.routes";
 
 const router = Router();
 
@@ -16,6 +17,9 @@ router.use("/", healthRoutes);
 
 // Mount authentication routes
 router.use("/auth", authRoutes);
+
+// Mount user profile & settings routes
+router.use("/user", userRoutes);
 
 // Mount meeting routes
 router.use("/meetings", meetingRoutes);
