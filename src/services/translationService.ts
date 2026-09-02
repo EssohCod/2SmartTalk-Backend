@@ -1,3 +1,4 @@
+import { pool } from "../config/db";
 import { env } from "../config/env";
 
 export interface LanguageInfo {
@@ -149,6 +150,72 @@ export const SUPPORTED_LANGUAGES: LanguageInfo[] = [
   { code: "yo", name: "Yoruba", nativeName: "Èdè Yorùbá", flag: "🇳🇬" },
   { code: "zu", name: "Zulu", nativeName: "isiZulu", flag: "🇿🇦" },
 ];
+
+export interface ResolvedLanguagePreference {
+  language: string;
+  code: string;
+  flag: string;
+  enabled: boolean;
+}
+
+export async function resolvePreferredLanguage(context?: any): Promise<ResolvedLanguagePreference> {
+  const user = context?.user || context || {};
+  const headers = context?.headers || {};
+  const query = context?.query || {};
+  const body = context?.body || {};
+
+  const explicitLanguage =
+    (query.userLanguage as string) ||
+    (headers["x-user-language"] as string) ||
+    user?.nativeLanguage ||
+    user?.native_language ||
+    user?.preferredLanguage;
+
+  const explicitCode =
+    (query.userLanguageCode as string) ||
+    (headers["x-user-language-code"] as string) ||
+    user?.nativeLanguageCode ||
+    user?.native_language_code;
+
+  const explicitFlag =
+    (query.userLanguageFlag as string) ||
+    (headers["x-user-language-flag"] as string) ||
+    user?.nativeLanguageFlag ||
+    user?.native_language_flag;
+
+  let language = explicitLanguage || "English (US)";
+  let code = explicitCode || "en-US";
+  let flag = explicitFlag || "🇺🇸";
+  let enabled = user?.liveTranslationEnabled ?? user?.live_translation_enabled ?? true;
+
+  const userId = user?.userId || user?.id || (headers["x-user-id"] as string) || (query.userId as string) || (body.userId as string);
+  const email = user?.email || (headers["x-user-email"] as string) || (query.userEmail as string) || (query.email as string) || (body.email as string);
+
+  if (userId || email) {
+    const result = await pool.query(
+      `SELECT native_language, native_language_code, native_language_flag, live_translation_enabled
+       FROM users
+       WHERE id = $1 OR LOWER(email) = LOWER($2)
+       LIMIT 1`,
+      [userId || "00000000-0000-0000-0000-000000000000", email || ""]
+    );
+
+    const row = result.rows[0];
+    if (row) {
+      language = explicitLanguage || row.native_language || language;
+      code = explicitCode || row.native_language_code || code;
+      flag = explicitFlag || row.native_language_flag || flag;
+      enabled = user?.liveTranslationEnabled ?? user?.live_translation_enabled ?? (row.live_translation_enabled !== false);
+    }
+  }
+
+  return {
+    language,
+    code,
+    flag,
+    enabled: enabled !== false,
+  };
+}
 
 /**
  * Normalizes language input to a standard ISO code

@@ -49,7 +49,7 @@ export const optionalAuthenticate = async (req: AuthenticatedRequest, res: Respo
 
     if (!headerUserId && headerEmail) {
       const uRes = await pool.query(
-        "SELECT id, native_language, native_language_flag FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        "SELECT id, native_language, native_language_code, native_language_flag, live_translation_enabled FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
         [headerEmail.trim()]
       );
       if (uRes.rows.length > 0) {
@@ -58,17 +58,36 @@ export const optionalAuthenticate = async (req: AuthenticatedRequest, res: Respo
           userId: headerUserId,
           email: headerEmail,
           nativeLanguage: uRes.rows[0].native_language,
+          nativeLanguageCode: uRes.rows[0].native_language_code || "en-US",
           nativeLanguageFlag: uRes.rows[0].native_language_flag,
+          liveTranslationEnabled: uRes.rows[0].live_translation_enabled !== false,
         } as any;
         return next();
       }
     }
 
     if (headerUserId || headerEmail) {
-      req.user = {
-        userId: headerUserId,
-        email: headerEmail,
-      } as any;
+      const uRes = await pool.query(
+        "SELECT id, email, native_language, native_language_code, native_language_flag, live_translation_enabled FROM users WHERE ($1::uuid IS NOT NULL AND id = $1) OR LOWER(email) = LOWER($2) LIMIT 1",
+        [headerUserId || null, headerEmail || ""]
+      );
+
+      if (uRes.rows.length > 0) {
+        const row = uRes.rows[0];
+        req.user = {
+          userId: row.id,
+          email: row.email,
+          nativeLanguage: row.native_language,
+          nativeLanguageCode: row.native_language_code || "en-US",
+          nativeLanguageFlag: row.native_language_flag,
+          liveTranslationEnabled: row.live_translation_enabled !== false,
+        } as any;
+      } else {
+        req.user = {
+          userId: headerUserId,
+          email: headerEmail,
+        } as any;
+      }
     }
 
     next();

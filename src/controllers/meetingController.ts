@@ -1,5 +1,7 @@
 import { Request, Response } from "express";
 import { query } from "../config/db";
+import { resolvePreferredLanguage } from "../services/translationService";
+import { sendExpoPushNotification } from "./notificationController";
 
 export interface MeetingDbRow {
   id: string;
@@ -27,8 +29,8 @@ export interface MeetingDbRow {
   updated_at: Date;
 }
 
-const mapMeetingRowToDto = (row: MeetingDbRow) => {
-  let parsedParticipants = [];
+const mapMeetingRowToDto = (row: MeetingDbRow, currentUserId?: string | null, currentUserEmail?: string | null) => {
+  let parsedParticipants: any[] = [];
   if (typeof row.participants === "string") {
     try {
       parsedParticipants = JSON.parse(row.participants);
@@ -38,6 +40,12 @@ const mapMeetingRowToDto = (row: MeetingDbRow) => {
   } else if (Array.isArray(row.participants)) {
     parsedParticipants = row.participants;
   }
+
+  const isHost = Boolean(
+    (currentUserId && row.host_id === currentUserId) ||
+    (currentUserEmail && row.host_email && row.host_email.toLowerCase() === currentUserEmail.toLowerCase()) ||
+    (!currentUserId && !currentUserEmail && row.is_host)
+  );
 
   return {
     id: row.id,
@@ -51,7 +59,7 @@ const mapMeetingRowToDto = (row: MeetingDbRow) => {
     link: row.shareable_link,
     participants: parsedParticipants,
     dubbingEnabled: row.dubbing_enabled,
-    isHost: row.is_host,
+    isHost,
     muteAllAllowed: row.mute_all_allowed,
     allowUnmute: row.allow_unmute,
     waitingRoomEnabled: row.waiting_room_enabled,
@@ -65,15 +73,16 @@ const mapMeetingRowToDto = (row: MeetingDbRow) => {
 
 export const meetingController = {
   /**
-   * 1. Get All Upcoming Meetings
+   * 1. Get All Upcoming Meetings (Host + Accepted Attendee Meetings)
    */
   async getUpcomingMeetings(req: Request, res: Response): Promise<void> {
     try {
       const user = (req as any).user;
       const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.query.userId as string);
       const email = user?.email || (req.headers["x-user-email"] as string) || (req.query.email as string);
+      const userName = user?.name || (req.query.name as string) || "";
 
-      if (!userId && !email) {
+      if (!userId && !email && !userName) {
         res.status(200).json({
           success: true,
           count: 0,
@@ -82,15 +91,31 @@ export const meetingController = {
         return;
       }
 
+      const cleanEmail = email ? email.toLowerCase().trim() : "";
+      const cleanUserId = userId ? String(userId).trim() : "";
+      const cleanName = userName ? userName.toLowerCase().trim() : "";
+
       const result = await query<MeetingDbRow>(
         `SELECT * FROM meetings 
          WHERE (status = 'upcoming' OR status = 'live')
-           AND (host_id = $1 OR LOWER(host_email) = LOWER($2) OR participants::text ILIKE $3)
+           AND (
+             host_id = $1 
+             OR (host_email IS NOT NULL AND LOWER(host_email) = $2)
+             OR (participants::text ILIKE $3 AND (participants::text ILIKE '%accepted%' OR participants::text ILIKE '%"status":"accepted"%'))
+             OR (participants::text ILIKE $4 AND (participants::text ILIKE '%accepted%' OR participants::text ILIKE '%"status":"accepted"%'))
+             OR (participants::text ILIKE $5 AND (participants::text ILIKE '%accepted%' OR participants::text ILIKE '%"status":"accepted"%'))
+           )
          ORDER BY created_at DESC`,
-        [userId || "00000000-0000-0000-0000-000000000000", email || "", `%${email || userId}%`]
+        [
+          cleanUserId || "00000000-0000-0000-0000-000000000000",
+          cleanEmail || "no-match@email.local",
+          `%${cleanEmail || "no-match-email"}%`,
+          `%${cleanUserId || "no-match-id"}%`,
+          `%${cleanName || "no-match-name"}%`,
+        ]
       );
 
-      const meetings = result.rows.map(mapMeetingRowToDto);
+      const meetings = result.rows.map((row) => mapMeetingRowToDto(row, cleanUserId, cleanEmail));
 
       res.status(200).json({
         success: true,
@@ -104,10 +129,11 @@ export const meetingController = {
   },
 
   /**
-   * 2. Schedule New Meeting
+   * 2. Schedule New Meeting (With Automatic Invite Notifications to Contacts)
    */
   async scheduleMeeting(req: Request, res: Response): Promise<void> {
     try {
+      const preferredLanguage = await resolvePreferredLanguage(req);
       const {
         title,
         meetingType = "video",
@@ -124,8 +150,8 @@ export const meetingController = {
         allowUnmute = true,
         waitingRoomEnabled = false,
         reminder10Min = true,
-        speakLanguage = "English",
-        speakLanguageFlag = "🇺🇸",
+        speakLanguage = preferredLanguage.language,
+        speakLanguageFlag = preferredLanguage.flag,
         hostEmail,
       } = req.body;
       const requestUser = (req as any).user;
@@ -189,7 +215,115 @@ export const meetingController = {
         ]
       );
 
-      const createdMeeting = mapMeetingRowToDto(insertResult.rows[0]);
+      const createdMeeting = mapMeetingRowToDto(insertResult.rows[0], resolvedHostId, resolvedHostEmail);
+
+      // Resolve Host profile info for invite notifications
+      let hostName = "Your contact";
+      let hostAvatarUrl: string | null = null;
+      if (resolvedHostId) {
+        const hostUser = await query("SELECT name, avatar_url, email FROM users WHERE id = $1 LIMIT 1", [resolvedHostId]);
+        if (hostUser.rows.length > 0) {
+          hostName = hostUser.rows[0].name;
+          hostAvatarUrl = hostUser.rows[0].avatar_url;
+        }
+      } else if (resolvedHostEmail) {
+        const hostUser = await query("SELECT name, avatar_url, email FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1", [resolvedHostEmail]);
+        if (hostUser.rows.length > 0) {
+          hostName = hostUser.rows[0].name;
+          hostAvatarUrl = hostUser.rows[0].avatar_url;
+        }
+      }
+
+      // Create invite notification for each invited participant
+      if (Array.isArray(participants) && participants.length > 0) {
+        for (const p of participants) {
+          let targetUserId: string | null = p.id || p.userId || null;
+          let targetUserEmail: string | null = p.email || null;
+
+          // Lookup target user from contacts or users table if needed
+          if (targetUserId) {
+            const userLookup = await query(
+              `SELECT id, email, name FROM users WHERE id = $1
+               UNION ALL
+               SELECT contact_user_id as id, email, name FROM contacts WHERE id = $1 AND contact_user_id IS NOT NULL
+               LIMIT 1`,
+              [targetUserId]
+            );
+            if (userLookup.rows.length > 0) {
+              targetUserId = userLookup.rows[0].id;
+              targetUserEmail = targetUserEmail || userLookup.rows[0].email;
+            }
+          }
+
+          if (!targetUserEmail && (p.username || p.name)) {
+            const userByName = await query(
+              `SELECT id, email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(name) = LOWER($2) LIMIT 1`,
+              [(p.username || "").replace(/^@/, ""), p.name || ""]
+            );
+            if (userByName.rows.length > 0) {
+              targetUserId = targetUserId || userByName.rows[0].id;
+              targetUserEmail = userByName.rows[0].email;
+            }
+          }
+
+          // Avoid creating self-invitation for the host
+          if (
+            (targetUserId && targetUserId === resolvedHostId) ||
+            (targetUserEmail && resolvedHostEmail && targetUserEmail.toLowerCase() === resolvedHostEmail.toLowerCase())
+          ) {
+            continue;
+          }
+
+          if (targetUserId || targetUserEmail) {
+            const desc = `${hostName} invited you to "${cleanTitle}" on ${date} at ${startTime} (${timezone || "UTC"}).`;
+            const contactDataObj = {
+              name: hostName,
+              avatar: hostAvatarUrl,
+              email: resolvedHostEmail,
+              meetingId: createdMeeting.id,
+              meetingTitle: cleanTitle,
+              meetingDate: date,
+              meetingTime: startTime,
+              meetingType: meetingType,
+              meetingLink: generatedLink,
+              status: "pending",
+            };
+
+            await query(
+              `INSERT INTO notifications (
+                user_id, user_email, category, title, description,
+                avatar_url, icon_name, icon_bg_color, icon_color,
+                action_type, action_label, contact_data, meeting_id,
+                is_unread, created_at, updated_at
+              ) VALUES (
+                $1, $2, 'meetings', 'Meeting Invitation', $3,
+                $4, 'video', '#EDFAF3', '#10B981',
+                'accept_meeting_invite', 'Accept Invite', $5, $6,
+                true, NOW(), NOW()
+              )`,
+              [
+                targetUserId,
+                targetUserEmail ? targetUserEmail.toLowerCase().trim() : null,
+                desc,
+                hostAvatarUrl,
+                JSON.stringify(contactDataObj),
+                createdMeeting.id,
+              ]
+            );
+
+            try {
+              if (targetUserEmail) {
+                await sendExpoPushNotification(targetUserEmail, "Meeting Invitation", desc, {
+                  meetingId: createdMeeting.id,
+                  actionType: "accept_meeting_invite",
+                });
+              }
+            } catch (pushErr) {
+              console.warn("Push notification error on meeting invite:", pushErr);
+            }
+          }
+        }
+      }
 
       res.status(201).json({
         success: true,
@@ -203,7 +337,186 @@ export const meetingController = {
   },
 
   /**
-   * 3. Delete / Cancel Meeting
+   * 3. Accept Meeting Invitation
+   * POST /api/meetings/:id/accept
+   */
+  async acceptInvite(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.body?.userId as string);
+      const userEmail = user?.email || (req.headers["x-user-email"] as string) || (req.body?.userEmail as string);
+      const userName = user?.name || (req.body?.userName as string) || "Participant";
+
+      if (!id) {
+        res.status(400).json({ error: "Meeting ID is required." });
+        return;
+      }
+
+      const meetingRes = await query<MeetingDbRow>("SELECT * FROM meetings WHERE id = $1", [id]);
+      if (meetingRes.rows.length === 0) {
+        res.status(404).json({ error: "Meeting not found." });
+        return;
+      }
+
+      const meeting = meetingRes.rows[0];
+      let participants: any[] = [];
+      if (typeof meeting.participants === "string") {
+        try {
+          participants = JSON.parse(meeting.participants);
+        } catch {
+          participants = [];
+        }
+      } else if (Array.isArray(meeting.participants)) {
+        participants = meeting.participants;
+      }
+
+      // Update participant status to "accepted"
+      let found = false;
+      const updatedParticipants = participants.map((p: any) => {
+        const isMatch =
+          (userId && (p.id === userId || p.userId === userId)) ||
+          (userEmail && p.email && p.email.toLowerCase() === userEmail.toLowerCase()) ||
+          (userName && p.name && p.name.toLowerCase() === userName.toLowerCase());
+
+        if (isMatch) {
+          found = true;
+          return {
+            ...p,
+            id: userId || p.id,
+            userId: userId || p.userId,
+            email: userEmail || p.email,
+            name: userName || p.name,
+            status: "accepted",
+          };
+        }
+        return p;
+      });
+
+      if (!found) {
+        updatedParticipants.push({
+          id: userId,
+          userId: userId,
+          name: userName,
+          email: userEmail,
+          status: "accepted",
+        });
+      }
+
+      // Save updated participants into meetings table
+      await query(
+        `UPDATE meetings SET participants = $1, updated_at = NOW() WHERE id = $2`,
+        [JSON.stringify(updatedParticipants), id]
+      );
+
+      // Update corresponding notification in notifications table
+      if (userId || userEmail) {
+        await query(
+          `UPDATE notifications
+           SET action_type = 'join_meeting',
+               action_label = 'Join Meeting',
+               is_unread = false,
+               description = REPLACE(description, 'invited you to', 'You accepted the invitation to'),
+               updated_at = NOW()
+           WHERE meeting_id = $1 AND (
+             (user_id IS NOT NULL AND user_id = $2) OR
+             (user_email IS NOT NULL AND LOWER(user_email) = LOWER($3))
+           )`,
+          [id, userId || "00000000-0000-0000-0000-000000000000", userEmail || ""]
+        );
+      }
+
+      const updatedMeeting = mapMeetingRowToDto(
+        { ...meeting, participants: updatedParticipants },
+        userId,
+        userEmail
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Meeting invitation accepted successfully!",
+        meeting: updatedMeeting,
+      });
+    } catch (error: any) {
+      console.error("AcceptMeetingInvite error:", error);
+      res.status(500).json({ error: "Failed to accept meeting invitation." });
+    }
+  },
+
+  /**
+   * 4. Decline Meeting Invitation
+   * POST /api/meetings/:id/decline
+   */
+  async declineInvite(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.body?.userId as string);
+      const userEmail = user?.email || (req.headers["x-user-email"] as string) || (req.body?.userEmail as string);
+
+      if (!id) {
+        res.status(400).json({ error: "Meeting ID is required." });
+        return;
+      }
+
+      const meetingRes = await query<MeetingDbRow>("SELECT * FROM meetings WHERE id = $1", [id]);
+      if (meetingRes.rows.length > 0) {
+        const meeting = meetingRes.rows[0];
+        let participants: any[] = [];
+        if (typeof meeting.participants === "string") {
+          try {
+            participants = JSON.parse(meeting.participants);
+          } catch {
+            participants = [];
+          }
+        } else if (Array.isArray(meeting.participants)) {
+          participants = meeting.participants;
+        }
+
+        const updatedParticipants = participants.map((p: any) => {
+          const isMatch =
+            (userId && (p.id === userId || p.userId === userId)) ||
+            (userEmail && p.email && p.email.toLowerCase() === userEmail.toLowerCase());
+
+          if (isMatch) {
+            return { ...p, status: "declined" };
+          }
+          return p;
+        });
+
+        await query(
+          `UPDATE meetings SET participants = $1, updated_at = NOW() WHERE id = $2`,
+          [JSON.stringify(updatedParticipants), id]
+        );
+      }
+
+      if (userId || userEmail) {
+        await query(
+          `UPDATE notifications
+           SET action_type = 'view_info',
+               action_label = 'Declined',
+               is_unread = false,
+               updated_at = NOW()
+           WHERE meeting_id = $1 AND (
+             (user_id IS NOT NULL AND user_id = $2) OR
+             (user_email IS NOT NULL AND LOWER(user_email) = LOWER($3))
+           )`,
+          [id, userId || "00000000-0000-0000-0000-000000000000", userEmail || ""]
+        );
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Meeting invitation declined.",
+      });
+    } catch (error: any) {
+      console.error("DeclineMeetingInvite error:", error);
+      res.status(500).json({ error: "Failed to decline meeting invitation." });
+    }
+  },
+
+  /**
+   * 5. Delete / Cancel Meeting
    */
   async deleteMeeting(req: Request, res: Response): Promise<void> {
     try {
@@ -236,11 +549,14 @@ export const meetingController = {
   },
 
   /**
-   * 4. Get Meeting By ID
+   * 6. Get Meeting By ID
    */
   async getMeetingById(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
+      const user = (req as any).user;
+      const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
+      const email = user?.email || (req.headers["x-user-email"] as string);
 
       const result = await query<MeetingDbRow>(
         `SELECT * FROM meetings WHERE id = $1`,
@@ -252,7 +568,7 @@ export const meetingController = {
         return;
       }
 
-      const meeting = mapMeetingRowToDto(result.rows[0]);
+      const meeting = mapMeetingRowToDto(result.rows[0], userId, email);
 
       res.status(200).json({
         success: true,

@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
-import { translationService, normalizeLanguageCode } from "../services/translationService";
+import { resolvePreferredLanguage, translationService, normalizeLanguageCode } from "../services/translationService";
 import { sendExpoPushNotification } from "./notificationController";
 
 function isUuid(str: string): boolean {
@@ -22,12 +22,13 @@ export const callController = {
    */
   async initiateCall(req: Request, res: Response): Promise<void> {
     try {
+      const preferredLanguage = await resolvePreferredLanguage(req);
       const {
         callerName = "Emma Johnson",
         callerUsername = "@emma_johnson",
         callerAvatar = null,
-        callerLanguage = "English",
-        callerLanguageFlag = "🇺🇸",
+        callerLanguage = preferredLanguage.language,
+        callerLanguageFlag = preferredLanguage.flag,
         callerLocation = "San Francisco, CA",
         calleeName,
         calleeUsername,
@@ -453,7 +454,8 @@ export const callController = {
    */
   async translateCallSpeech(req: Request, res: Response): Promise<void> {
     try {
-      const { text, sourceLanguage = "English", targetLanguage = "French" } = req.body;
+      const preferredLanguage = await resolvePreferredLanguage(req);
+      const { text, sourceLanguage = "auto", targetLanguage = preferredLanguage.language } = req.body;
 
       if (!text || !text.trim()) {
         res.status(400).json({ error: "Speech transcript text is required." });

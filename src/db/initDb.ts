@@ -25,6 +25,7 @@ export async function initDb(): Promise<void> {
         password_hash VARCHAR(255) NOT NULL,
         gender VARCHAR(50) DEFAULT 'Other',
         native_language VARCHAR(100) DEFAULT 'English (US)',
+        native_language_code VARCHAR(20) DEFAULT 'en-US',
         native_language_flag VARCHAR(10) DEFAULT '🇺🇸',
         is_email_verified BOOLEAN DEFAULT false,
         avatar_url TEXT DEFAULT NULL,
@@ -47,6 +48,7 @@ export async function initDb(): Promise<void> {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT 'Connecting across cultures with 2SmartTalk 🌐';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS location VARCHAR(150) DEFAULT 'Global';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS native_language_code VARCHAR(20) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS live_translation_enabled BOOLEAN DEFAULT true;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS member_since VARCHAR(100) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb;

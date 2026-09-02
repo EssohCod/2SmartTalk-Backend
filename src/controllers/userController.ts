@@ -150,6 +150,7 @@ export const userController = {
           bio: userRow.bio || "Connecting across cultures with 2SmartTalk 🌐",
           location: userRow.location || null,
           nativeLanguage: userRow.native_language || "English",
+          nativeLanguageCode: userRow.native_language_code || "en-US",
           nativeLanguageFlag: userRow.native_language_flag || "🇺🇸",
           liveTranslationEnabled: userRow.live_translation_enabled !== false,
           avatarUrl: userRow.avatar_url,
@@ -302,21 +303,23 @@ export const userController = {
         (req.headers["x-user-email"] as string) ||
         req.body.email;
 
-      const { nativeLanguage, nativeLanguageFlag, liveTranslationEnabled } = req.body;
+      const { nativeLanguage, nativeLanguageCode, nativeLanguageFlag, liveTranslationEnabled } = req.body;
 
       const updateQuery = `
         UPDATE users
         SET 
           native_language = COALESCE($1, native_language),
-          native_language_flag = COALESCE($2, native_language_flag),
-          live_translation_enabled = COALESCE($3, live_translation_enabled),
+          native_language_code = COALESCE($2, native_language_code),
+          native_language_flag = COALESCE($3, native_language_flag),
+          live_translation_enabled = COALESCE($4, live_translation_enabled),
           updated_at = NOW()
-        WHERE id = $4 OR LOWER(email) = LOWER($5)
-        RETURNING native_language, native_language_flag, live_translation_enabled;
+        WHERE id = $5 OR LOWER(email) = LOWER($6)
+        RETURNING native_language, native_language_code, native_language_flag, live_translation_enabled;
       `;
 
       const result = await query(updateQuery, [
         nativeLanguage || null,
+        nativeLanguageCode || null,
         nativeLanguageFlag || null,
         liveTranslationEnabled !== undefined ? liveTranslationEnabled : null,
         userId || "00000000-0000-0000-0000-000000000000",
@@ -335,6 +338,7 @@ export const userController = {
         message: "Language preferences updated! 🌐",
         language: {
           nativeLanguage: updated.native_language,
+          nativeLanguageCode: updated.native_language_code || "en-US",
           nativeLanguageFlag: updated.native_language_flag,
           liveTranslationEnabled: updated.live_translation_enabled,
         },

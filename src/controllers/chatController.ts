@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
-import { translationService, normalizeLanguageCode } from "../services/translationService";
+import { translationService, normalizeLanguageCode, resolvePreferredLanguage } from "../services/translationService";
+import { sendExpoPushNotification } from "./notificationController";
 
 function isUuid(str: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
@@ -182,17 +183,20 @@ export const chatController = {
   async getMessages(req: Request, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
+      const preferredLanguage = await resolvePreferredLanguage(req);
       const authenticatedUser = (req as any).user;
       const userLanguage =
         (req.query.userLanguage as string) ||
         (req.headers["x-user-language"] as string) ||
         authenticatedUser?.nativeLanguage ||
-        authenticatedUser?.native_language;
+        authenticatedUser?.native_language ||
+        preferredLanguage.language;
       const userLanguageFlag =
         (req.query.userLanguageFlag as string) ||
         (req.headers["x-user-language-flag"] as string) ||
         authenticatedUser?.nativeLanguageFlag ||
-        authenticatedUser?.native_language_flag;
+        authenticatedUser?.native_language_flag ||
+        preferredLanguage.flag;
 
       if (!id || !isUuid(id)) {
         // Return clean empty message list for non-UUID mock ids
@@ -290,6 +294,7 @@ export const chatController = {
   async sendMessage(req: Request, res: Response): Promise<void> {
     try {
       const id = req.params.id as string;
+      const preferredLanguage = await resolvePreferredLanguage(req);
       const {
         text,
         senderName = "Emma Johnson",
@@ -299,8 +304,8 @@ export const chatController = {
         senderLanguageFlag = "🇺🇸",
         recipientName = null,
         recipientAvatar = null,
-        targetLanguage = "English",
-        targetLanguageFlag = "🇺🇸",
+        targetLanguage = preferredLanguage.language,
+        targetLanguageFlag = preferredLanguage.flag,
         messageType = "text",
         audioUrl = null,
         audioDuration = null,
@@ -469,13 +474,36 @@ export const chatController = {
 
       const msgRow = insertResult.rows[0];
 
-      // 2. Update parent conversation last_message
+      // 2. Update parent conversation last_message and unread count
       await pool.query(
         `UPDATE conversations
-         SET last_message = $1, last_message_time = NOW()
+         SET last_message = $1, last_message_time = NOW(), unread_count = unread_count + 1
          WHERE id = $2`,
         [cleanText, convId]
       );
+
+      // 3. Send Push Notification to recipient
+      // We try to find the recipient's email from users table or contacts table
+      const recipientLookup = await pool.query(
+        `SELECT email FROM users WHERE id = $1 OR LOWER(name) = LOWER($2)
+         UNION ALL
+         SELECT email FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
+         LIMIT 1`,
+        [convId, recipientName || ""]
+      );
+
+      if (recipientLookup.rows[0]?.email) {
+        try {
+          await sendExpoPushNotification(
+            recipientLookup.rows[0].email,
+            `New message from ${senderName}`,
+            translatedText || cleanText,
+            { chatId: convId, type: "new_message" }
+          );
+        } catch (pushErr) {
+          console.error("Push notification error in sendMessage:", pushErr);
+        }
+      }
 
       res.status(201).json({
         success: true,

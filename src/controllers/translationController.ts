@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { translationService } from "../services/translationService";
+import { resolvePreferredLanguage, translationService } from "../services/translationService";
 
 export const translationController = {
   /**
@@ -7,7 +7,8 @@ export const translationController = {
    */
   async translate(req: Request, res: Response): Promise<void> {
     try {
-      const { text, texts, targetLanguage = "en", sourceLanguage } = req.body;
+      const preferredLanguage = await resolvePreferredLanguage(req);
+      const { text, texts, targetLanguage = preferredLanguage.language, sourceLanguage } = req.body;
 
       if (!targetLanguage) {
         res.status(400).json({ error: "targetLanguage parameter is required (e.g., 'es', 'fr', 'tl', 'ru', 'en')." });

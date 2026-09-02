@@ -15,7 +15,9 @@ export interface UserDbRow {
   password_hash: string;
   gender: string;
   native_language: string;
+  native_language_code: string | null;
   native_language_flag: string;
+  live_translation_enabled: boolean | null;
   is_email_verified: boolean;
   avatar_url: string | null;
   created_at: Date;
@@ -36,6 +38,7 @@ export const authController = {
         password,
         gender = "Other",
         nativeLanguage = "English (US)",
+        nativeLanguageCode = "en-US",
         nativeLanguageFlag = "🇺🇸",
       } = req.body;
 
@@ -94,9 +97,9 @@ export const authController = {
       const insertResult = await query<UserDbRow>(
         `INSERT INTO users (
           first_name, last_name, name, username, email, password_hash, 
-          gender, native_language, native_language_flag, is_email_verified, member_since
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, TO_CHAR(NOW(), 'FMMonth YYYY'))
-        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_flag, is_email_verified, created_at, member_since`,
+          gender, native_language, native_language_code, native_language_flag, is_email_verified, member_since
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, TO_CHAR(NOW(), 'FMMonth YYYY'))
+        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, is_email_verified, created_at, member_since`,
         [
           firstName.trim(),
           lastName.trim(),
@@ -106,6 +109,7 @@ export const authController = {
           passwordHash,
           gender,
           nativeLanguage,
+          nativeLanguageCode,
           nativeLanguageFlag,
         ]
       );
@@ -127,6 +131,7 @@ export const authController = {
           email: createdUser.email,
           gender: createdUser.gender,
           nativeLanguage: createdUser.native_language,
+          nativeLanguageCode: createdUser.native_language_code,
           nativeLanguageFlag: createdUser.native_language_flag,
           isEmailVerified: createdUser.is_email_verified,
         },
@@ -157,7 +162,7 @@ export const authController = {
         `UPDATE users 
          SET is_email_verified = true, updated_at = NOW() 
          WHERE LOWER(email) = $1 
-         RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_flag, avatar_url, is_email_verified`,
+         RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, avatar_url, is_email_verified`,
         [cleanEmail]
       );
 
@@ -197,7 +202,9 @@ export const authController = {
         name: user.name,
         gender: user.gender,
         nativeLanguage: user.native_language,
+        nativeLanguageCode: user.native_language_code || "en-US",
         nativeLanguageFlag: user.native_language_flag,
+        liveTranslationEnabled: user.live_translation_enabled !== false,
       };
 
       const token = tokenService.generateAccessToken(tokenPayload);
@@ -217,6 +224,7 @@ export const authController = {
           email: user.email,
           gender: user.gender,
           nativeLanguage: user.native_language,
+          nativeLanguageCode: user.native_language_code || "en-US",
           nativeLanguageFlag: user.native_language_flag,
           avatarUrl: user.avatar_url,
           isEmailVerified: true,
@@ -318,7 +326,9 @@ export const authController = {
         name: user.name,
         gender: user.gender,
         nativeLanguage: user.native_language,
+        nativeLanguageCode: user.native_language_code || "en-US",
         nativeLanguageFlag: user.native_language_flag,
+        liveTranslationEnabled: user.live_translation_enabled !== false,
       };
 
       const token = tokenService.generateAccessToken(tokenPayload);
@@ -338,7 +348,9 @@ export const authController = {
           email: user.email,
           gender: user.gender,
           nativeLanguage: user.native_language,
+          nativeLanguageCode: user.native_language_code || "en-US",
           nativeLanguageFlag: user.native_language_flag,
+          liveTranslationEnabled: user.live_translation_enabled !== false,
           avatarUrl: user.avatar_url,
           isEmailVerified: user.is_email_verified,
         },

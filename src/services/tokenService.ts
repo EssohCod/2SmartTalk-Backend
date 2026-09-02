@@ -8,7 +8,9 @@ export interface TokenPayload {
   name: string;
   gender: string;
   nativeLanguage?: string;
+  nativeLanguageCode?: string;
   nativeLanguageFlag?: string;
+  liveTranslationEnabled?: boolean;
 }
 
 export const tokenService = {
