@@ -97,9 +97,9 @@ export const authController = {
       const insertResult = await query<UserDbRow>(
         `INSERT INTO users (
           first_name, last_name, name, username, email, password_hash, 
-          gender, native_language, native_language_code, native_language_flag, is_email_verified, member_since
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, TO_CHAR(NOW(), 'FMMonth YYYY'))
-        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, is_email_verified, created_at, member_since`,
+          gender, native_language, native_language_code, native_language_flag, is_email_verified
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false)
+        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_flag, is_email_verified, created_at`,
         [
           firstName.trim(),
           lastName.trim(),
@@ -137,8 +137,12 @@ export const authController = {
         },
       });
     } catch (error: any) {
-      console.error("SignUp error:", error);
-      res.status(500).json({ error: "Internal server error during registration. Please try again." });
+      console.error("SignUp error details:", error);
+      res.status(500).json({
+        error: "Internal server error during registration. Please try again.",
+        message: error.message,
+        stack: process.env.NODE_ENV === "development" ? error.stack : undefined
+      });
     }
   },
 
@@ -189,7 +193,7 @@ export const authController = {
           $1, $2, 'system', 'Welcome to 2SmartTalk! 🎉',
           'Your account has been successfully verified. You can now make real-time translated voice and video calls across 150+ languages.',
           true, 'sparkles', '#EFF6FF', '#3B82F6',
-          'view_info', 'Get Started', NOW(), NOW()
+          NULL, NULL, NOW(), NOW()
         )`,
         [user.id, user.email]
       ).catch((e) => console.warn("Failed to create welcome notification:", e));
