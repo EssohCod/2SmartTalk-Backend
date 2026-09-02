@@ -282,7 +282,7 @@ export const authController = {
    */
   async signIn(req: Request, res: Response): Promise<void> {
     try {
-      const { email, password } = req.body;
+      const { email, password, deviceId } = req.body;
       const cleanIdentifier = email.toLowerCase().trim().replace(/^@/, "");
 
       // Find user by email OR username
@@ -302,6 +302,7 @@ export const authController = {
 
       // Compare password hash
       const isPasswordMatch = await bcrypt.compare(password, user.password_hash);
+
       if (!isPasswordMatch) {
         res.status(401).json({
           error: "Invalid email/username or password. Please try again.",
@@ -320,6 +321,26 @@ export const authController = {
           name: user.name,
         });
         return;
+      }
+
+      // 🛡️ SECURITY CHALLENGE: If login from a different phone/device, trigger OTP
+      const lastDevice = (user as any).last_device_id;
+      if (deviceId && lastDevice && lastDevice !== deviceId) {
+        const otpCode = await otpService.createOtp(user.email, "email_verification");
+        await emailService.sendSecurityChallengeEmail(user.email, otpCode, user.first_name);
+        res.status(403).json({
+          error: "Security Check: New device detected. We've sent a verification code to your email.",
+          requiresEmailVerification: true,
+          email: user.email,
+          name: user.name,
+          isNewDevice: true
+        });
+        return;
+      }
+
+      // Update last_device_id if provided
+      if (deviceId) {
+        await query(`UPDATE users SET last_device_id = $1 WHERE id = $2`, [deviceId, user.id]);
       }
 
       // Generate JWT tokens
