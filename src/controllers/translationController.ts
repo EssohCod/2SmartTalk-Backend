@@ -68,6 +68,22 @@ export const translationController = {
       res.status(500).json({ error: "Failed to retrieve supported languages." });
     }
   },
+
+  /**
+   * 3. Get Active Translation Engines Status
+   */
+  async getStatus(req: Request, res: Response): Promise<void> {
+    try {
+      const status = translationService.getEngineStatus();
+      res.status(200).json({
+        success: true,
+        engines: status,
+      });
+    } catch (error: any) {
+      console.error("TranslationController.getStatus error:", error);
+      res.status(500).json({ error: "Failed to retrieve engine status." });
+    }
+  },
 };
 
 export default translationController;

@@ -32,4 +32,13 @@ export const env = {
     pass: process.env.SMTP_PASS || "mgbzmgxvstibzbwk",
     from: process.env.EMAIL_FROM || '"2SmartTalk" <no-reply@2smarttalk.com>',
   },
+  translation: {
+    openaiApiKey: process.env.OPENAI_API_KEY || "",
+    openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    geminiApiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY || "",
+    geminiModel: process.env.GEMINI_MODEL || "gemini-1.5-flash",
+    deeplApiKey: process.env.DEEPL_API_KEY || "",
+    googleTranslateApiKey: process.env.GOOGLE_TRANSLATE_API_KEY || "",
+    preferredEngine: process.env.TRANSLATION_ENGINE || "auto", // 'auto' | 'openai' | 'gemini' | 'deepl' | 'google'
+  },
 };

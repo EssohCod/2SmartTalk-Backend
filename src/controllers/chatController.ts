@@ -215,12 +215,19 @@ export const chatController = {
           let targetLang = row.target_language || "English";
           let targetFlag = row.target_language_flag || "🇺🇸";
 
-          // If requesting participant has a specific signed-up language, translate directly into THEIR language on their screen
+          // If requesting participant has a specific signed-up language, ensure text is translated to THEIR language
           if (userLanguage && row.original_text) {
             const senderLang = row.sender_language || "English";
-            if (normalizeLanguageCode(senderLang) !== normalizeLanguageCode(userLanguage)) {
+            if (
+              normalizeLanguageCode(row.target_language) === normalizeLanguageCode(userLanguage) &&
+              row.translated_text &&
+              row.translated_text !== row.original_text
+            ) {
+              // Already translated to viewer's language in DB
+              translatedText = row.translated_text;
               targetLang = userLanguage;
-              targetFlag = userLanguageFlag || "🌐";
+              targetFlag = userLanguageFlag || row.target_language_flag || "🌐";
+            } else if (normalizeLanguageCode(senderLang) !== normalizeLanguageCode(userLanguage)) {
               try {
                 const transRes = await translationService.translateText(
                   row.original_text,
@@ -228,8 +235,11 @@ export const chatController = {
                   senderLang
                 );
                 translatedText = transRes.translatedText;
+                targetLang = userLanguage;
                 targetFlag = transRes.targetLanguageFlag || userLanguageFlag || "🌐";
-              } catch {}
+              } catch {
+                translatedText = row.translated_text || row.original_text;
+              }
             } else {
               translatedText = row.original_text;
               targetLang = userLanguage;
@@ -289,10 +299,8 @@ export const chatController = {
         senderLanguageFlag = "🇺🇸",
         recipientName = null,
         recipientAvatar = null,
-        // The client supplies the recipient's language for direct chats. For
-        // group chats, reads are translated into each viewer's language.
-        targetLanguage = senderLanguage,
-        targetLanguageFlag = senderLanguageFlag,
+        targetLanguage = "English",
+        targetLanguageFlag = "🇺🇸",
         messageType = "text",
         audioUrl = null,
         audioDuration = null,
@@ -325,8 +333,8 @@ export const chatController = {
       const cleanText = (text || "").trim();
       let translatedText = cleanText;
 
-      // Perform real-time AI neural translation if target language is different from sender
-      if (cleanText && resolvedTargetLanguage && normalizeLanguageCode(resolvedTargetLanguage) !== normalizeLanguageCode(senderLanguage)) {
+      // Perform real-time AI translation into recipient's language
+      if (cleanText && resolvedTargetLanguage) {
         try {
           const transResult = await translationService.translateText(
             cleanText,
@@ -334,6 +342,8 @@ export const chatController = {
             senderLanguage
           );
           translatedText = transResult.translatedText;
+          resolvedTargetLanguage = transResult.targetLanguage;
+          resolvedTargetLanguageFlag = transResult.targetLanguageFlag;
         } catch (transErr) {
           console.warn("Real-time message translation error, using original text:", transErr);
         }

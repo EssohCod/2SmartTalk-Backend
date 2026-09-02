@@ -1,3 +1,5 @@
+import { env } from "../config/env";
+
 export interface LanguageInfo {
   code: string;
   name: string;
@@ -149,16 +151,16 @@ export const SUPPORTED_LANGUAGES: LanguageInfo[] = [
 ];
 
 /**
- * Normalizes language input to a standard ISO code compatible with Google Neural MT
+ * Normalizes language input to a standard ISO code
  */
-export function normalizeLanguageCode(lang: string): string {
+export function normalizeLanguageCode(lang?: string): string {
   if (!lang) return "en";
   const clean = lang.trim().toLowerCase();
+  if (clean === "auto") return "auto";
 
   // Direct code match
   const exactCode = SUPPORTED_LANGUAGES.find((l) => l.code.toLowerCase() === clean);
   if (exactCode) {
-    // Map dialect codes to primary 2-letter Google Translate code if needed
     if (exactCode.code === "fil" || exactCode.code === "tl") return "tl";
     if (exactCode.code.startsWith("en-")) return "en";
     if (exactCode.code === "es-419") return "es";
@@ -185,28 +187,332 @@ export function normalizeLanguageCode(lang: string): string {
     return foundByName.code;
   }
 
-  // Quick fallback aliases
-  if (clean.includes("tagalog") || clean.includes("filipino")) return "tl";
-  if (clean.includes("spanish") || clean.includes("español")) return "es";
+  // Common aliases
   if (clean.includes("french") || clean.includes("français")) return "fr";
+  if (clean.includes("english") || clean.includes("anglais")) return "en";
+  if (clean.includes("spanish") || clean.includes("español")) return "es";
+  if (clean.includes("german") || clean.includes("deutsch")) return "de";
+  if (clean.includes("italian") || clean.includes("italiano")) return "it";
+  if (clean.includes("portuguese") || clean.includes("português")) return "pt";
   if (clean.includes("russian") || clean.includes("русский")) return "ru";
   if (clean.includes("chinese") || clean.includes("mandarin") || clean.includes("中文")) return "zh-CN";
   if (clean.includes("japanese") || clean.includes("日本語")) return "ja";
   if (clean.includes("korean") || clean.includes("한국어")) return "ko";
-  if (clean.includes("german") || clean.includes("deutsch")) return "de";
   if (clean.includes("arabic") || clean.includes("عربي")) return "ar";
-  if (clean.includes("portuguese") || clean.includes("português")) return "pt";
-  if (clean.includes("italian") || clean.includes("italiano")) return "it";
   if (clean.includes("hindi") || clean.includes("हिन्दी")) return "hi";
+  if (clean.includes("tagalog") || clean.includes("filipino")) return "tl";
   if (clean.includes("yoruba")) return "yo";
   if (clean.includes("igbo")) return "ig";
   if (clean.includes("hausa")) return "ha";
-  if (clean.includes("vietnamese")) return "vi";
-  if (clean.includes("indonesian")) return "id";
-  if (clean.includes("turkish")) return "tr";
-  if (clean.includes("ukrainian")) return "uk";
+  if (clean.includes("swahili") || clean.includes("kiswahili")) return "sw";
 
   return clean.slice(0, 5);
+}
+
+/**
+ * Resolve display LanguageInfo object
+ */
+export function getLanguageInfo(lang?: string): LanguageInfo {
+  const code = normalizeLanguageCode(lang);
+  const found =
+    SUPPORTED_LANGUAGES.find((l) => l.code === code || l.code.startsWith(code)) ||
+    SUPPORTED_LANGUAGES.find(
+      (l) => l.name.toLowerCase() === (lang || "").toLowerCase()
+    );
+
+  if (found) return found;
+
+  return {
+    code: code || "en",
+    name: lang || "English",
+    nativeName: lang || "English",
+    flag: "🌐",
+  };
+}
+
+// In-Memory Translation Cache (LRU-style capped map)
+const translationCache = new Map<string, { translatedText: string; engine: string }>();
+const MAX_CACHE_SIZE = 5000;
+
+function getCacheKey(text: string, source: string, target: string): string {
+  return `${source}:${target}:${text.trim()}`;
+}
+
+function setInCache(key: string, translatedText: string, engine: string): void {
+  if (translationCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = translationCache.keys().next().value;
+    if (firstKey) translationCache.delete(firstKey);
+  }
+  translationCache.set(key, { translatedText, engine });
+}
+
+export interface TranslationResult {
+  originalText: string;
+  translatedText: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceLanguageFlag: string;
+  targetLanguageFlag: string;
+  engine: string;
+}
+
+/**
+ * 1. OpenAI Translation Engine (GPT-4o-mini / GPT-4o)
+ * Highest accuracy, contextual conversational understanding, handles slang/typos.
+ */
+async function translateWithOpenAI(
+  text: string,
+  targetLangName: string,
+  sourceLangName?: string
+): Promise<string | null> {
+  const apiKey = env.translation.openaiApiKey;
+  if (!apiKey) return null;
+
+  const model = env.translation.openaiModel || "gpt-4o-mini";
+  const sourceContext = sourceLangName && sourceLangName !== "auto"
+    ? `from ${sourceLangName}`
+    : "from the detected source language";
+
+  const systemPrompt = `You are a real-time conversational chat translator for 2SmartTalk.
+Translate the user message ${sourceContext} accurately and naturally into ${targetLangName}.
+Requirements:
+1. Preserve conversational tone, emotion, emojis, punctuation, and intent.
+2. If there are minor slang words or colloquial spelling (e.g. "jo mapel" -> "je m'appelle"), intelligently understand the intended meaning and provide the natural translation in ${targetLangName}.
+3. Return ONLY the translated text string. Do NOT add quotation marks, explanations, notes, or prefixes.`;
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text },
+      ],
+      temperature: 0.2,
+      max_tokens: 1000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    console.warn(`[OpenAI Translation] API error ${response.status}:`, errBody);
+    return null;
+  }
+
+  const data: any = await response.json();
+  const output = data.choices?.[0]?.message?.content?.trim();
+  return output || null;
+}
+
+/**
+ * 2. Google Gemini Translation Engine (Gemini 1.5 Flash / Gemini 2.0 Flash)
+ * Ultra-fast, highly accurate neural translation.
+ */
+async function translateWithGemini(
+  text: string,
+  targetLangName: string,
+  targetCode: string,
+  sourceLangName?: string
+): Promise<string | null> {
+  const apiKey = env.translation.geminiApiKey;
+  if (!apiKey) return null;
+
+  const model = env.translation.geminiModel || "gemini-1.5-flash";
+  const sourceText = sourceLangName && sourceLangName !== "auto"
+    ? `from ${sourceLangName}`
+    : "from its detected source language";
+
+  const prompt = `You are a precision translator. Translate the following chat message ${sourceText} into ${targetLangName} (code: ${targetCode}). Preserve conversational nuance and return ONLY the translated string without quotes or markdown:\n\n${text}`;
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 1000,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    console.warn(`[Gemini Translation] API error ${response.status}:`, errBody);
+    return null;
+  }
+
+  const data: any = await response.json();
+  const output = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  return output || null;
+}
+
+/**
+ * 3. DeepL Translation Engine
+ * Gold standard translation for European and major global languages.
+ */
+async function translateWithDeepL(
+  text: string,
+  targetCode: string,
+  sourceCode?: string
+): Promise<string | null> {
+  const apiKey = env.translation.deeplApiKey;
+  if (!apiKey) return null;
+
+  const isFreeKey = apiKey.endsWith(":fx");
+  const host = isFreeKey ? "https://api-free.deepl.com" : "https://api.deepl.com";
+
+  // Map 2-letter codes to DeepL supported target uppercase codes
+  let deepLTarget = targetCode.toUpperCase();
+  if (deepLTarget === "EN") deepLTarget = "EN-US";
+  if (deepLTarget === "PT") deepLTarget = "PT-PT";
+
+  const params = new URLSearchParams();
+  params.append("text", text);
+  params.append("target_lang", deepLTarget);
+  if (sourceCode && sourceCode !== "auto" && sourceCode !== "en") {
+    params.append("source_lang", sourceCode.toUpperCase());
+  }
+
+  const response = await fetch(`${host}/v2/translate`, {
+    method: "POST",
+    headers: {
+      Authorization: `DeepL-Auth-Key ${apiKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    console.warn(`[DeepL Translation] API error ${response.status}:`, errBody);
+    return null;
+  }
+
+  const data: any = await response.json();
+  return data.translations?.[0]?.text?.trim() || null;
+}
+
+/**
+ * 4. Google Cloud Translation Official API (v2)
+ */
+async function translateWithGoogleCloud(
+  text: string,
+  targetCode: string,
+  sourceCode?: string
+): Promise<string | null> {
+  const apiKey = env.translation.googleTranslateApiKey;
+  if (!apiKey) return null;
+
+  const url = `https://translation.googleapis.com/language/translate/v2?key=${apiKey}`;
+  const bodyPayload: any = {
+    q: text,
+    target: targetCode,
+    format: "text",
+  };
+  if (sourceCode && sourceCode !== "auto") {
+    bodyPayload.source = sourceCode;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(bodyPayload),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    console.warn(`[Google Cloud Translation] API error ${response.status}:`, errBody);
+    return null;
+  }
+
+  const data: any = await response.json();
+  return data.data?.translations?.[0]?.translatedText?.trim() || null;
+}
+
+/**
+ * 5. Free Neural Fallback (Google GTX)
+ */
+async function translateWithGoogleGTX(
+  text: string,
+  targetCode: string,
+  sourceCode?: string
+): Promise<string | null> {
+  try {
+    const srcParam = sourceCode === "auto" || !sourceCode ? "auto" : sourceCode;
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${srcParam}&tl=${targetCode}&dt=t&q=${encodeURIComponent(
+      text
+    )}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      const rawJson: any = await response.json();
+      if (Array.isArray(rawJson) && Array.isArray(rawJson[0])) {
+        const translatedChunks = rawJson[0]
+          .map((chunk: any) => chunk[0])
+          .filter(Boolean)
+          .join("");
+
+        if (translatedChunks && translatedChunks.trim()) {
+          return translatedChunks.trim();
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * 6. Free Neural Fallback (MyMemory)
+ */
+async function translateWithMyMemory(
+  text: string,
+  targetCode: string,
+  sourceCode?: string
+): Promise<string | null> {
+  try {
+    const srcLang = sourceCode === "auto" || !sourceCode ? "en" : sourceCode;
+    const myMemoryUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
+      text
+    )}&langpair=${srcLang}|${targetCode}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+
+    const mmRes = await fetch(myMemoryUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (mmRes.ok) {
+      const mmData: any = await mmRes.json();
+      const translated = mmData?.responseData?.translatedText;
+      if (
+        translated &&
+        !translated.startsWith("MYMEMORY WARNING") &&
+        translated.trim().toLowerCase() !== text.trim().toLowerCase()
+      ) {
+        return translated.trim();
+      }
+    }
+  } catch {}
+  return null;
 }
 
 /**
@@ -221,30 +527,40 @@ export const translationService = {
   },
 
   /**
+   * Get status of configured translation engines
+   */
+  getEngineStatus() {
+    return {
+      openai: Boolean(env.translation.openaiApiKey),
+      openaiModel: env.translation.openaiModel,
+      gemini: Boolean(env.translation.geminiApiKey),
+      geminiModel: env.translation.geminiModel,
+      deepl: Boolean(env.translation.deeplApiKey),
+      googleCloud: Boolean(env.translation.googleTranslateApiKey),
+      preferredEngine: env.translation.preferredEngine,
+      cacheEntries: translationCache.size,
+    };
+  },
+
+  /**
    * Translate single text string from source to target language
    */
   async translateText(
     text: string,
     targetLanguage: string,
     sourceLanguage?: string
-  ): Promise<{
-    originalText: string;
-    translatedText: string;
-    sourceLanguage: string;
-    targetLanguage: string;
-    sourceLanguageFlag: string;
-    targetLanguageFlag: string;
-    engine: string;
-  }> {
+  ): Promise<TranslationResult> {
     const cleanText = (text || "").trim();
     if (!cleanText) {
+      const targetObj = getLanguageInfo(targetLanguage);
+      const sourceObj = getLanguageInfo(sourceLanguage);
       return {
         originalText: "",
         translatedText: "",
-        sourceLanguage: sourceLanguage || "en",
-        targetLanguage: targetLanguage || "en",
-        sourceLanguageFlag: "🇺🇸",
-        targetLanguageFlag: "🇺🇸",
+        sourceLanguage: sourceObj.name,
+        targetLanguage: targetObj.name,
+        sourceLanguageFlag: sourceObj.flag,
+        targetLanguageFlag: targetObj.flag,
         engine: "empty",
       };
     }
@@ -252,109 +568,106 @@ export const translationService = {
     const targetCode = normalizeLanguageCode(targetLanguage);
     const sourceCode = sourceLanguage ? normalizeLanguageCode(sourceLanguage) : "auto";
 
-    const targetLangObj =
-      SUPPORTED_LANGUAGES.find((l) => l.code === targetCode || l.code.startsWith(targetCode)) ||
-      SUPPORTED_LANGUAGES.find((l) => l.code === "en-US") ||
-      SUPPORTED_LANGUAGES[0];
+    const targetObj = getLanguageInfo(targetLanguage);
+    const sourceObj = getLanguageInfo(sourceLanguage);
 
-    const sourceLangObj =
-      SUPPORTED_LANGUAGES.find((l) => l.code === sourceCode || l.code.startsWith(sourceCode)) ||
-      SUPPORTED_LANGUAGES.find((l) => l.code === "en-US") ||
-      SUPPORTED_LANGUAGES[0];
-
-    // If source and target are identical
+    // If source and target are identical and specified
     if (sourceCode === targetCode && sourceCode !== "auto") {
       return {
         originalText: cleanText,
         translatedText: cleanText,
-        sourceLanguage: sourceCode,
-        targetLanguage: targetCode,
-        sourceLanguageFlag: sourceLangObj.flag,
-        targetLanguageFlag: targetLangObj.flag,
+        sourceLanguage: sourceObj.name,
+        targetLanguage: targetObj.name,
+        sourceLanguageFlag: sourceObj.flag,
+        targetLanguageFlag: targetObj.flag,
         engine: "identical",
       };
     }
 
-    // 1. Primary: Google Neural Translation API
-    try {
-      const srcParam = sourceCode === "auto" ? "auto" : sourceCode;
-      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${srcParam}&tl=${targetCode}&dt=t&q=${encodeURIComponent(
-        cleanText
-      )}`;
-
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (2SmartTalk-NeuralTranslate/2.0)",
-          Accept: "application/json",
-        },
-      });
-
-      if (response.ok) {
-        const rawJson: any = await response.json();
-        if (Array.isArray(rawJson) && Array.isArray(rawJson[0])) {
-          const translatedChunks = rawJson[0]
-            .map((chunk: any) => chunk[0])
-            .filter(Boolean)
-            .join("");
-
-          if (translatedChunks && translatedChunks.trim()) {
-            const detectedSource = rawJson[2] || sourceCode;
-            const detectedLangObj =
-              SUPPORTED_LANGUAGES.find((l) => l.code === detectedSource || l.code.startsWith(detectedSource)) || sourceLangObj;
-
-            return {
-              originalText: cleanText,
-              translatedText: translatedChunks.trim(),
-              sourceLanguage: detectedSource,
-              targetLanguage: targetCode,
-              sourceLanguageFlag: detectedLangObj.flag,
-              targetLanguageFlag: targetLangObj.flag,
-              engine: "google-neural",
-            };
-          }
-        }
-      }
-    } catch (networkError) {
-      console.warn("Google neural translation error, falling back to MyMemory:", networkError);
+    // Check cache
+    const cacheKey = getCacheKey(cleanText, sourceCode, targetCode);
+    const cached = translationCache.get(cacheKey);
+    if (cached) {
+      return {
+        originalText: cleanText,
+        translatedText: cached.translatedText,
+        sourceLanguage: sourceObj.name,
+        targetLanguage: targetObj.name,
+        sourceLanguageFlag: sourceObj.flag,
+        targetLanguageFlag: targetObj.flag,
+        engine: `${cached.engine} (cached)`,
+      };
     }
 
-    // 2. Secondary: MyMemory Multi-Engine Translation
-    try {
-      const srcLang = sourceCode === "auto" ? "en" : sourceCode;
-      const myMemoryUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
-        cleanText
-      )}&langpair=${srcLang}|${targetCode}`;
+    let translated: string | null = null;
+    let engineUsed = "none";
 
-      const mmRes = await fetch(myMemoryUrl);
-      if (mmRes.ok) {
-        const mmData: any = await mmRes.json();
-        const translated = mmData?.responseData?.translatedText;
-        if (translated && !translated.startsWith("MYMEMORY WARNING")) {
-          return {
-            originalText: cleanText,
-            translatedText: translated,
-            sourceLanguage: srcLang,
-            targetLanguage: targetCode,
-            sourceLanguageFlag: sourceLangObj.flag,
-            targetLanguageFlag: targetLangObj.flag,
-            engine: "mymemory-nmt",
-          };
-        }
-      }
-    } catch (mmError) {
-      console.warn("MyMemory fallback error:", mmError);
+    const preferred = env.translation.preferredEngine.toLowerCase();
+
+    // Strategy 1: Explicit preference if configured
+    if (preferred === "openai" && env.translation.openaiApiKey) {
+      translated = await translateWithOpenAI(cleanText, targetObj.name, sourceObj.name);
+      if (translated) engineUsed = `openai (${env.translation.openaiModel})`;
+    } else if (preferred === "gemini" && env.translation.geminiApiKey) {
+      translated = await translateWithGemini(cleanText, targetObj.name, targetCode, sourceObj.name);
+      if (translated) engineUsed = `gemini (${env.translation.geminiModel})`;
+    } else if (preferred === "deepl" && env.translation.deeplApiKey) {
+      translated = await translateWithDeepL(cleanText, targetCode, sourceCode);
+      if (translated) engineUsed = "deepl";
+    } else if (preferred === "google" && env.translation.googleTranslateApiKey) {
+      translated = await translateWithGoogleCloud(cleanText, targetCode, sourceCode);
+      if (translated) engineUsed = "google-cloud";
     }
 
-    // Default graceful echo if offline
+    // Strategy 2: Automatic Cascade (OpenAI -> Gemini -> DeepL -> Google Cloud -> Free Neural)
+    if (!translated && env.translation.openaiApiKey) {
+      translated = await translateWithOpenAI(cleanText, targetObj.name, sourceObj.name);
+      if (translated) engineUsed = `openai (${env.translation.openaiModel})`;
+    }
+
+    if (!translated && env.translation.geminiApiKey) {
+      translated = await translateWithGemini(cleanText, targetObj.name, targetCode, sourceObj.name);
+      if (translated) engineUsed = `gemini (${env.translation.geminiModel})`;
+    }
+
+    if (!translated && env.translation.deeplApiKey) {
+      translated = await translateWithDeepL(cleanText, targetCode, sourceCode);
+      if (translated) engineUsed = "deepl";
+    }
+
+    if (!translated && env.translation.googleTranslateApiKey) {
+      translated = await translateWithGoogleCloud(cleanText, targetCode, sourceCode);
+      if (translated) engineUsed = "google-cloud";
+    }
+
+    // Strategy 3: Free Neural API Fallbacks
+    if (!translated) {
+      translated = await translateWithGoogleGTX(cleanText, targetCode, sourceCode);
+      if (translated) engineUsed = "google-gtx-neural";
+    }
+
+    if (!translated) {
+      translated = await translateWithMyMemory(cleanText, targetCode, sourceCode);
+      if (translated) engineUsed = "mymemory-nmt";
+    }
+
+    // Fallback: If all remote translators fail, return original
+    const finalTranslation = translated && translated.trim() ? translated.trim() : cleanText;
+    const finalEngine = translated ? engineUsed : "echo-fallback";
+
+    // Cache successful translation
+    if (translated) {
+      setInCache(cacheKey, finalTranslation, finalEngine);
+    }
+
     return {
       originalText: cleanText,
-      translatedText: cleanText,
-      sourceLanguage: sourceCode === "auto" ? "en" : sourceCode,
-      targetLanguage: targetCode,
-      sourceLanguageFlag: sourceLangObj.flag,
-      targetLanguageFlag: targetLangObj.flag,
-      engine: "echo-fallback",
+      translatedText: finalTranslation,
+      sourceLanguage: sourceObj.name,
+      targetLanguage: targetObj.name,
+      sourceLanguageFlag: sourceObj.flag,
+      targetLanguageFlag: targetObj.flag,
+      engine: finalEngine,
     };
   },
 
@@ -371,6 +684,7 @@ export const translationService = {
       translatedText: string;
       sourceLanguage: string;
       targetLanguage: string;
+      engine: string;
     }>
   > {
     const promises = texts.map((t) =>
@@ -382,6 +696,7 @@ export const translationService = {
       translatedText: r.translatedText,
       sourceLanguage: r.sourceLanguage,
       targetLanguage: r.targetLanguage,
+      engine: r.engine,
     }));
   },
 };
