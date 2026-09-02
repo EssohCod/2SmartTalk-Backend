@@ -317,46 +317,87 @@ export const contactController = {
     try {
       const user = (req as any).user;
       const currentUserId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || "00000000-0000-0000-0000-000000000000";
-      const query = (req.query.q as string || req.query.username as string || "").trim().toLowerCase();
+      const rawQuery = ((req.query.q as string) || (req.query.username as string) || "").trim();
+      const normalizedQuery = rawQuery
+        .replace(/^@+/, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
 
-      if (!query || query.length < 1) {
+      if (!normalizedQuery) {
         res.status(200).json({ success: true, users: [] });
         return;
       }
 
-      const cleanQuery = query.replace(/^@/, "");
+      const tokens = normalizedQuery
+        .split(/\s+/)
+        .map((token) => token.replace(/[^a-z0-9]/g, ""))
+        .filter(Boolean);
+
+      if (tokens.length === 0) {
+        res.status(200).json({ success: true, users: [] });
+        return;
+      }
+
+      const params: any[] = [currentUserId];
+      const matchClauses: string[] = [];
+
+      tokens.forEach((token) => {
+        const pattern = `%${token}%`;
+        params.push(pattern);
+        matchClauses.push(`(
+         LOWER(COALESCE(u.username, '')) LIKE $${params.length}
+         OR LOWER(COALESCE(u.name, '')) LIKE $${params.length}
+         OR LOWER(COALESCE(u.first_name, '')) LIKE $${params.length}
+         OR LOWER(COALESCE(u.last_name, '')) LIKE $${params.length}
+         OR LOWER(COALESCE(u.email, '')) LIKE $${params.length}
+        )`);
+      });
+
+      const whereClause = matchClauses.length > 0 ? `(${matchClauses.join(" AND ")})` : "(1 = 0)";
+      const exactMatch = tokens[0];
+      const prefixMatch = `${tokens[0]}%`;
 
       const result = await pool.query(
         `SELECT u.id, u.name, u.username, u.email, u.avatar_url, u.native_language, u.native_language_flag, u.bio,
-                EXISTS(
-                  SELECT 1 FROM contacts c 
-                  WHERE c.user_id = $2 
-                    AND (c.contact_user_id = u.id OR LOWER(c.username) = LOWER('@' || u.username))
-                ) as is_added
+               EXISTS(
+                 SELECT 1 FROM contacts c
+                 WHERE c.user_id = $1
+                   AND (c.contact_user_id = u.id OR LOWER(c.username) = LOWER('@' || u.username))
+               ) as is_added
          FROM users u
-         WHERE u.id != $2 
-           AND (LOWER(u.username) LIKE $1 OR LOWER(u.name) LIKE $1)
-         ORDER BY (LOWER(u.username) = LOWER($3)) DESC, u.created_at DESC
+         WHERE u.id != $1
+          AND ${whereClause}
+         ORDER BY
+          CASE
+            WHEN LOWER(u.username) = LOWER($${params.length + 1}) THEN 0
+            WHEN LOWER(u.username) LIKE LOWER($${params.length + 2}) THEN 1
+            WHEN LOWER(u.name) LIKE LOWER($${params.length + 3}) THEN 2
+            ELSE 3
+          END,
+          u.created_at DESC
          LIMIT 20`,
-        [`%${cleanQuery}%`, currentUserId, cleanQuery]
+        [...params, exactMatch, prefixMatch, `%${exactMatch}%`]
       );
 
       res.status(200).json({
         success: true,
         count: result.rows.length,
         users: result.rows.map((u) => ({
-          id: u.id,
-          name: u.name,
-          username: `@${u.username}`,
-          email: u.email,
-          avatarUrl: u.avatar_url,
-          speaks: u.native_language || "English",
-          speaksFlag: u.native_language_flag || "🇺🇸",
-          language: u.native_language || "English",
-          flag: u.native_language_flag || "🇺🇸",
-          bio: u.bio || "2SmartTalk member",
-          isAdded: Boolean(u.is_added),
-          isOnline: true,
+         id: u.id,
+         name: u.name,
+         username: u.username.startsWith("@") ? u.username : `@${u.username}`,
+         email: u.email,
+         avatarUrl: u.avatar_url,
+         speaks: u.native_language || "English",
+         speaksFlag: u.native_language_flag || "🇺🇸",
+         language: u.native_language || "English",
+         flag: u.native_language_flag || "🇺🇸",
+         bio: u.bio || "2SmartTalk member",
+         isAdded: Boolean(u.is_added),
+         isOnline: true,
         })),
       });
     } catch (error: any) {
