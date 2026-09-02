@@ -151,7 +151,7 @@ export const authController = {
    */
   async verifyEmail(req: Request, res: Response): Promise<void> {
     try {
-      const { email, otp } = req.body;
+      const { email, otp, deviceId } = req.body;
       const cleanEmail = email.toLowerCase().trim();
 
       // Verify OTP code
@@ -161,13 +161,15 @@ export const authController = {
         return;
       }
 
-      // Update user verified status in DB
+      // Update user verified status in DB and last_device_id if provided
       const updateResult = await query<UserDbRow>(
         `UPDATE users 
-         SET is_email_verified = true, updated_at = NOW() 
+         SET is_email_verified = true,
+             last_device_id = COALESCE($2, last_device_id),
+             updated_at = NOW()
          WHERE LOWER(email) = $1 
-         RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, avatar_url, is_email_verified`,
-        [cleanEmail]
+         RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, avatar_url, is_email_verified, live_translation_enabled`,
+        [cleanEmail, deviceId || null]
       );
 
       if (updateResult.rows.length === 0) {
@@ -232,10 +234,11 @@ export const authController = {
           nativeLanguageFlag: user.native_language_flag,
           avatarUrl: user.avatar_url,
           isEmailVerified: true,
+          liveTranslationEnabled: user.live_translation_enabled !== false,
         },
       });
     } catch (error: any) {
-      console.error("VerifyEmail error:", error);
+      console.error("VerifyEmail error details:", error);
       res.status(500).json({ error: "Failed to verify email. Please try again." });
     }
   },
