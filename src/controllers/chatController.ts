@@ -341,7 +341,9 @@ else if (userLanguage) {
       let resolvedTargetLanguage = targetLanguage;
       let resolvedTargetLanguageFlag = targetLanguageFlag;
 
-      const currentUserId = (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null;
+      const authenticatedUser = (req as any).user;
+      const currentUserId = authenticatedUser?.userId || authenticatedUser?.id || (req.headers["x-user-id"] as string) || null;
+      const currentUserEmail = authenticatedUser?.email || (req.headers["x-user-email"] as string) || null;
 
       // 1. If it's a direct chat (UUID), find the OTHER person's language from their profile
       if (isUuid(id)) {
@@ -353,10 +355,16 @@ else if (userLanguage) {
         if (conversationLookup.rows.length > 0) {
           const conv = conversationLookup.rows[0];
           if (conv.type === "direct" && Array.isArray(conv.participants)) {
-            // Find participant who is NOT the current user
-            const otherParticipant = conv.participants.find((p: any) =>
-              (p.id && p.id !== currentUserId) || (p.email && p.email !== (req as any).user?.email)
-            );
+            // 🛡️ Robust Filtering: Find participant who is definitely NOT the sender
+            const otherParticipant = conv.participants.find((p: any) => {
+              const pId = p.id || p.userId;
+              const pEmail = p.email;
+
+              const isMatchById = currentUserId && pId && String(pId) === String(currentUserId);
+              const isMatchByEmail = currentUserEmail && pEmail && String(pEmail).toLowerCase() === String(currentUserEmail).toLowerCase();
+
+              return !isMatchById && !isMatchByEmail;
+            });
 
             if (otherParticipant) {
               const profileLookup = await pool.query(
