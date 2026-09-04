@@ -44,21 +44,100 @@ export const chatController = {
       }
 
       const dbConversations = await Promise.all(refreshedResult.rows.map(async (row) => {
+        let displayName = row.title;
+        let displayAvatar = row.avatar_url;
         let recipientLang = row.recipient_lang || "English";
         let recipientLangFlag = row.recipient_lang_flag || "🇺🇸";
 
-        // Direct-chat language must come from the recipient profile
-        if (row.type === "direct" && isUuid(row.id)) {
-          const recipient = await pool.query(
-            `SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
-             UNION ALL
-             SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(name) = LOWER($2)
-             LIMIT 1`,
-            [row.id, row.title]
-          );
-          if (recipient.rows[0]?.native_language) {
-            recipientLang = recipient.rows[0].native_language;
-            recipientLangFlag = recipient.rows[0].native_language_flag || recipientLangFlag;
+        // Direct-chat partner & language resolution relative to viewer
+        if (row.type === "direct") {
+          let partnerFound = false;
+
+          // 1. Check participants array if available
+          let participantsList: string[] = [];
+          if (Array.isArray(row.participants)) {
+            participantsList = row.participants
+              .map((p: any) => (typeof p === "string" ? p : (p.id || p.userId || "")))
+              .filter(Boolean);
+          }
+
+          const otherParticipantId = participantsList.find((pId: string) => userId && pId !== userId);
+          if (otherParticipantId) {
+            const partUser = await pool.query(
+              "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
+              [otherParticipantId]
+            );
+            if (partUser.rows.length > 0) {
+              displayName = partUser.rows[0].name;
+              displayAvatar = partUser.rows[0].avatar_url || displayAvatar;
+              recipientLang = partUser.rows[0].native_language || recipientLang;
+              recipientLangFlag = partUser.rows[0].native_language_flag || recipientLangFlag;
+              partnerFound = true;
+            }
+          }
+
+          // 2. Check messages in conversation for other sender
+          if (!partnerFound && userId) {
+            const msgSender = await pool.query(
+              `SELECT sender_id, sender_name, sender_avatar, sender_language, sender_language_flag
+               FROM messages
+               WHERE conversation_id = $1 AND sender_id IS NOT NULL AND sender_id != $2
+               ORDER BY created_at DESC LIMIT 1`,
+              [row.id, userId]
+            );
+            if (msgSender.rows.length > 0) {
+              const otherId = msgSender.rows[0].sender_id;
+              const uRes = await pool.query(
+                "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
+                [otherId]
+              );
+              if (uRes.rows.length > 0) {
+                displayName = uRes.rows[0].name;
+                displayAvatar = uRes.rows[0].avatar_url || displayAvatar;
+                recipientLang = uRes.rows[0].native_language || recipientLang;
+                recipientLangFlag = uRes.rows[0].native_language_flag || recipientLangFlag;
+                partnerFound = true;
+              } else {
+                displayName = msgSender.rows[0].sender_name;
+                displayAvatar = msgSender.rows[0].sender_avatar || displayAvatar;
+                recipientLang = msgSender.rows[0].sender_language || recipientLang;
+                recipientLangFlag = msgSender.rows[0].sender_language_flag || recipientLangFlag;
+                partnerFound = true;
+              }
+            }
+          }
+
+          // 3. Check contacts table
+          if (!partnerFound && userId) {
+            const cRes = await pool.query(
+              `SELECT c.*, u.name as u_name, u.avatar_url as u_avatar, u.native_language as u_lang, u.native_language_flag as u_flag
+               FROM contacts c
+               LEFT JOIN users u ON u.id = c.user_id
+               WHERE c.contact_user_id = $1
+               LIMIT 1`,
+              [userId]
+            );
+            if (cRes.rows.length > 0) {
+              displayName = cRes.rows[0].u_name || cRes.rows[0].name;
+              displayAvatar = cRes.rows[0].u_avatar || displayAvatar;
+              recipientLang = cRes.rows[0].u_lang || recipientLang;
+              recipientLangFlag = cRes.rows[0].u_flag || recipientLangFlag;
+              partnerFound = true;
+            }
+          }
+
+          // 4. Fallback if displayName matches current viewer's name
+          if (user?.name && displayName.toLowerCase().trim() === user.name.toLowerCase().trim()) {
+            const otherUser = await pool.query(
+              "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id != $1 LIMIT 1",
+              [userId || "00000000-0000-0000-0000-000000000000"]
+            );
+            if (otherUser.rows.length > 0) {
+              displayName = otherUser.rows[0].name;
+              displayAvatar = otherUser.rows[0].avatar_url || displayAvatar;
+              recipientLang = otherUser.rows[0].native_language || recipientLang;
+              recipientLangFlag = otherUser.rows[0].native_language_flag || recipientLangFlag;
+            }
           }
         }
 
@@ -68,8 +147,8 @@ export const chatController = {
 
         return {
           id: row.id,
-          name: row.title,
-          avatarUrl: row.avatar_url,
+          name: displayName,
+          avatarUrl: displayAvatar,
           category: row.type,
           isGroup: row.type === "group",
           lastMessage: row.last_message || "Start conversation",
@@ -238,6 +317,37 @@ export const chatController = {
             translatedText = row.translated_text || row.original_text;
             targetLang = row.target_language;
             targetFlag = row.target_language_flag;
+
+            // 🛡️ RECIPIENT TRANSLATION RECOVERY:
+            // If targetLang was mistakenly saved as the same as sender_language,
+            // resolve the other participant's language and translate into their language.
+            const isSenderSameAsTarget = normalizeLanguageCode(targetLang) === normalizeLanguageCode(row.sender_language);
+            if (isSenderSameAsTarget && row.original_text) {
+              const otherUserRes = await pool.query(
+                `SELECT native_language, native_language_flag FROM users WHERE id != $1 AND LOWER(native_language) != LOWER($2) LIMIT 1`,
+                [row.sender_id || "00000000-0000-0000-0000-000000000000", row.sender_language]
+              );
+              if (otherUserRes.rows[0]?.native_language) {
+                const partnerLang = otherUserRes.rows[0].native_language;
+                const partnerFlag = otherUserRes.rows[0].native_language_flag || "🌐";
+                try {
+                  const transRes = await translationService.translateText(
+                    row.original_text,
+                    partnerLang,
+                    row.sender_language
+                  );
+                  translatedText = transRes.translatedText;
+                  targetLang = partnerLang;
+                  targetFlag = partnerFlag;
+
+                  // Heal DB row asynchronously
+                  pool.query(
+                    `UPDATE messages SET translated_text = $1, target_language = $2, target_language_flag = $3 WHERE id = $4`,
+                    [translatedText, targetLang, targetFlag, row.id]
+                  ).catch(() => {});
+                } catch {}
+              }
+            }
           } else if (userLanguage && row.original_text) {
             // RECEIVER PERSPECTIVE:
             // We must ensure the PRIMARY text is translated into the viewer's language.
@@ -357,8 +467,8 @@ else if (userLanguage) {
           if (conv.type === "direct" && Array.isArray(conv.participants)) {
             // 🛡️ Robust Filtering: Find participant who is definitely NOT the sender
             const otherParticipant = conv.participants.find((p: any) => {
-              const pId = p.id || p.userId;
-              const pEmail = p.email;
+              const pId = typeof p === "string" ? p : (p.id || p.userId);
+              const pEmail = typeof p === "object" ? p.email : null;
 
               const isMatchById = currentUserId && pId && String(pId) === String(currentUserId);
               const isMatchByEmail = currentUserEmail && pEmail && String(pEmail).toLowerCase() === String(currentUserEmail).toLowerCase();
@@ -367,17 +477,29 @@ else if (userLanguage) {
             });
 
             if (otherParticipant) {
+              const targetId = typeof otherParticipant === "string" ? otherParticipant : (otherParticipant.id || otherParticipant.userId || "00000000-0000-0000-0000-000000000000");
+              const targetEmail = typeof otherParticipant === "object" ? (otherParticipant.email || "") : "";
               const profileLookup = await pool.query(
-                `SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(email) = LOWER($2)
+                `SELECT native_language, native_language_flag FROM users WHERE id = $1 OR (LOWER(email) = LOWER($2) AND $2 != '')
                  UNION ALL
-                 SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(email) = LOWER($2)
+                 SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR (LOWER(email) = LOWER($2) AND $2 != '')
                  LIMIT 1`,
-                [otherParticipant.id || otherParticipant.userId || "00000000-0000-0000-0000-000000000000", otherParticipant.email || ""]
+                [targetId, targetEmail]
               );
 
               if (profileLookup.rows[0]?.native_language) {
                 resolvedTargetLanguage = profileLookup.rows[0].native_language;
                 resolvedTargetLanguageFlag = profileLookup.rows[0].native_language_flag || resolvedTargetLanguageFlag;
+              }
+            } else if (currentUserId) {
+              // Participant array might not have had other user, check past messages
+              const prevMsg = await pool.query(
+                "SELECT sender_id, sender_language, sender_language_flag FROM messages WHERE conversation_id = $1 AND sender_id IS NOT NULL AND sender_id != $2 ORDER BY created_at DESC LIMIT 1",
+                [id, currentUserId]
+              );
+              if (prevMsg.rows.length > 0) {
+                resolvedTargetLanguage = prevMsg.rows[0].sender_language || resolvedTargetLanguage;
+                resolvedTargetLanguageFlag = prevMsg.rows[0].sender_language_flag || resolvedTargetLanguageFlag;
               }
             }
           }
@@ -393,6 +515,19 @@ else if (userLanguage) {
           if (profileLookup.rows[0]?.native_language) {
             resolvedTargetLanguage = profileLookup.rows[0].native_language;
             resolvedTargetLanguageFlag = profileLookup.rows[0].native_language_flag || resolvedTargetLanguageFlag;
+          }
+        }
+
+        // 🛡️ CRITICAL SAFEGUARD:
+        // In direct 1-on-1 chat, targetLanguage must NEVER be identical to the sender's language!
+        if (normalizeLanguageCode(resolvedTargetLanguage) === normalizeLanguageCode(senderLanguage)) {
+          const diffUserRes = await pool.query(
+            "SELECT native_language, native_language_flag FROM users WHERE id != $1 AND LOWER(native_language) != LOWER($2) LIMIT 1",
+            [currentUserId || "00000000-0000-0000-0000-000000000000", senderLanguage]
+          );
+          if (diffUserRes.rows[0]?.native_language) {
+            resolvedTargetLanguage = diffUserRes.rows[0].native_language;
+            resolvedTargetLanguageFlag = diffUserRes.rows[0].native_language_flag || "🌐";
           }
         }
       }
