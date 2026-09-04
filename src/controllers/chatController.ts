@@ -47,8 +47,7 @@ export const chatController = {
         let recipientLang = row.recipient_lang || "English";
         let recipientLangFlag = row.recipient_lang_flag || "🇺🇸";
 
-        // Direct-chat language must come from the recipient profile, not a
-        // stale conversation default saved when the thread was created.
+        // Direct-chat language must come from the recipient profile
         if (row.type === "direct" && isUuid(row.id)) {
           const recipient = await pool.query(
             `SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
@@ -63,6 +62,10 @@ export const chatController = {
           }
         }
 
+        // 🛡️ FIX: Hide unread badge if the current user is the one who sent the last message
+        const isMeTheSender = (userId && row.last_sender_id === userId);
+        const unreadCount = isMeTheSender ? 0 : (row.unread_count || 0);
+
         return {
           id: row.id,
           name: row.title,
@@ -71,7 +74,7 @@ export const chatController = {
           isGroup: row.type === "group",
           lastMessage: row.last_message || "Start conversation",
           time: row.last_message_time ? new Date(row.last_message_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
-          unreadCount: row.unread_count || 0,
+          unreadCount,
           recipientLang,
           recipientLangFlag,
           participants: row.participants || [],
@@ -229,23 +232,28 @@ export const chatController = {
             (authenticatedUser?.name && row.sender_name === authenticatedUser.name);
 
           if (isViewerSender) {
-            // Keep the DB's translation (which is the one meant for the recipient)
+            // SENDER PERSPECTIVE:
+            // Primary = Original Text (Sender's native tongue)
+            // Translated = What the RECIPIENT received (Confirming delivery)
             translatedText = row.translated_text || row.original_text;
             targetLang = row.target_language;
             targetFlag = row.target_language_flag;
           } else if (userLanguage && row.original_text) {
-            // For INCOMING messages (viewer is NOT sender), translate to viewer's language
+            // RECEIVER PERSPECTIVE:
+            // We must ensure the PRIMARY text is translated into the viewer's language.
             const senderLang = row.sender_language || "English";
-            if (
-              normalizeLanguageCode(row.target_language) === normalizeLanguageCode(userLanguage) &&
-              row.translated_text &&
-              row.translated_text !== row.original_text
-            ) {
-              // Already translated to viewer's language in DB
+
+            const isTargetMatched = normalizeLanguageCode(row.target_language) === normalizeLanguageCode(userLanguage);
+            const isSenderMatched = normalizeLanguageCode(senderLang) === normalizeLanguageCode(userLanguage);
+
+            if (isTargetMatched && row.translated_text) {
+              // DB already has the translation for this viewer
               translatedText = row.translated_text;
               targetLang = userLanguage;
               targetFlag = userLanguageFlag || row.target_language_flag || "🌐";
-            } else if (normalizeLanguageCode(senderLang) !== normalizeLanguageCode(userLanguage)) {
+            } else if (!isSenderMatched) {
+              // Viewer speaks a different language than the sender
+              // Trigger on-the-fly translation into viewer's language
               try {
                 const transRes = await translationService.translateText(
                   row.original_text,
@@ -259,11 +267,13 @@ export const chatController = {
                 translatedText = row.translated_text || row.original_text;
               }
             } else {
+              // Viewer and sender speak the same language
               translatedText = row.original_text;
               targetLang = userLanguage;
               targetFlag = userLanguageFlag || "🇺🇸";
             }
-          } else if (userLanguage) {
+          }
+else if (userLanguage) {
             targetLang = userLanguage;
             targetFlag = userLanguageFlag || "🇺🇸";
           }
@@ -326,21 +336,56 @@ export const chatController = {
         mediaUrl = null,
       } = req.body;
 
-      // Resolve direct-chat language from the recipient profile rather than
-      // trusting a stale client value or conversation default.
+      // 🛡️ RECIPIENT LANGUAGE RESOLUTION ENGINE
+      // We must ensure the message is translated into the OTHER person's native language.
       let resolvedTargetLanguage = targetLanguage;
       let resolvedTargetLanguageFlag = targetLanguageFlag;
+
+      const currentUserId = (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null;
+
+      // 1. If it's a direct chat (UUID), find the OTHER person's language from their profile
       if (isUuid(id)) {
-        const recipient = await pool.query(
-          `SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
-           UNION ALL
-           SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(name) = LOWER($2)
-           LIMIT 1`,
-          [id, recipientName || ""]
+        const conversationLookup = await pool.query(
+          "SELECT type, participants FROM conversations WHERE id = $1 LIMIT 1",
+          [id]
         );
-        if (recipient.rows[0]?.native_language) {
-          resolvedTargetLanguage = recipient.rows[0].native_language;
-          resolvedTargetLanguageFlag = recipient.rows[0].native_language_flag || resolvedTargetLanguageFlag;
+
+        if (conversationLookup.rows.length > 0) {
+          const conv = conversationLookup.rows[0];
+          if (conv.type === "direct" && Array.isArray(conv.participants)) {
+            // Find participant who is NOT the current user
+            const otherParticipant = conv.participants.find((p: any) =>
+              (p.id && p.id !== currentUserId) || (p.email && p.email !== (req as any).user?.email)
+            );
+
+            if (otherParticipant) {
+              const profileLookup = await pool.query(
+                `SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(email) = LOWER($2)
+                 UNION ALL
+                 SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(email) = LOWER($2)
+                 LIMIT 1`,
+                [otherParticipant.id || otherParticipant.userId || "00000000-0000-0000-0000-000000000000", otherParticipant.email || ""]
+              );
+
+              if (profileLookup.rows[0]?.native_language) {
+                resolvedTargetLanguage = profileLookup.rows[0].native_language;
+                resolvedTargetLanguageFlag = profileLookup.rows[0].native_language_flag || resolvedTargetLanguageFlag;
+              }
+            }
+          }
+        } else {
+          // Fallback: Check if the ID itself is a user/contact ID (common in new chats)
+          const profileLookup = await pool.query(
+            `SELECT native_language, native_language_flag FROM users WHERE id = $1 OR LOWER(name) = LOWER($2)
+             UNION ALL
+             SELECT native_language, native_language_flag FROM contacts WHERE id = $1 OR LOWER(name) = LOWER($2)
+             LIMIT 1`,
+            [id, recipientName || ""]
+          );
+          if (profileLookup.rows[0]?.native_language) {
+            resolvedTargetLanguage = profileLookup.rows[0].native_language;
+            resolvedTargetLanguageFlag = profileLookup.rows[0].native_language_flag || resolvedTargetLanguageFlag;
+          }
         }
       }
 
@@ -409,6 +454,7 @@ export const chatController = {
       let convAvatar = recipientAvatar || null;
       let convLang = resolvedTargetLanguage;
       let convFlag = resolvedTargetLanguageFlag;
+      const currentUserId = (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null;
 
       if (isUuid(convId)) {
         // Look up in contacts table
@@ -440,27 +486,29 @@ export const chatController = {
         const check = await pool.query("SELECT id FROM conversations WHERE id = $1", [convId]);
         if (check.rows.length > 0) {
           convExists = true;
-          // Update conversation title and last message
+          // Update conversation title, last message and track sender
           await pool.query(
             `UPDATE conversations
              SET title = COALESCE($1, title),
                  avatar_url = COALESCE($2, avatar_url),
                  last_message = $3,
-                 last_message_time = NOW()
+                 last_message_time = NOW(),
+                 last_sender_id = $5
              WHERE id = $4`,
-            [convTitle, convAvatar, cleanText || resolvedOriginalText, convId]
+            [convTitle, convAvatar, cleanText || resolvedOriginalText, convId, currentUserId]
           );
         } else {
           // Insert with this exact contact/conversation ID
           await pool.query(
             `INSERT INTO conversations (
-              id, title, type, avatar_url, recipient_lang, recipient_lang_flag, last_message, last_message_time
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+              id, title, type, avatar_url, recipient_lang, recipient_lang_flag, last_message, last_message_time, last_sender_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)
             ON CONFLICT (id) DO UPDATE SET
               title = COALESCE(EXCLUDED.title, conversations.title),
               avatar_url = COALESCE(EXCLUDED.avatar_url, conversations.avatar_url),
               last_message = EXCLUDED.last_message,
-              last_message_time = NOW()`,
+              last_message_time = NOW(),
+              last_sender_id = EXCLUDED.last_sender_id`,
             [
               convId,
               convTitle,
@@ -469,6 +517,7 @@ export const chatController = {
               convLang || "English",
               convFlag || "🌐",
               cleanText || resolvedOriginalText,
+              currentUserId,
             ]
           );
           convExists = true;
@@ -478,8 +527,8 @@ export const chatController = {
       if (!convExists) {
         const createConv = await pool.query(
           `INSERT INTO conversations (
-            title, type, avatar_url, recipient_lang, recipient_lang_flag, last_message, last_message_time
-          ) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id`,
+            title, type, avatar_url, recipient_lang, recipient_lang_flag, last_message, last_message_time, last_sender_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7) RETURNING id`,
           [
             convTitle || senderName || "Direct Chat",
             "direct",
@@ -487,6 +536,7 @@ export const chatController = {
             convLang || "English",
             convFlag || "🌐",
             cleanText || resolvedOriginalText,
+            currentUserId,
           ]
         );
         convId = createConv.rows[0].id;
