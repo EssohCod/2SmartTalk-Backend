@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { translationService, normalizeLanguageCode, resolvePreferredLanguage } from "../services/translationService";
+import { dubbingService } from "../services/dubbingService";
 import { sendExpoPushNotification } from "./notificationController";
 
 function isUuid(str: string): boolean {
@@ -406,10 +407,39 @@ export const chatController = {
               targetLang = userLanguage;
               targetFlag = userLanguageFlag || "🇺🇸";
             }
-          }
-else if (userLanguage) {
+          } else if (userLanguage) {
             targetLang = userLanguage;
             targetFlag = userLanguageFlag || "🇺🇸";
+          }
+
+          const isAudioType =
+            row.message_type === "audio" ||
+            (row.original_text && row.original_text.startsWith("Voice Note")) ||
+            (row.translated_text && row.translated_text.startsWith("Voice Note"));
+
+          // Sender hears sender's voice/language, recipient hears translated voice/language
+          let resolvedAudioUrl = isViewerSender
+            ? (row.media_url || row.audio_url)
+            : (row.audio_url || row.media_url);
+
+          if (isAudioType && (!resolvedAudioUrl || !resolvedAudioUrl.trim())) {
+            try {
+              const textToSpeak = isViewerSender
+                ? (row.original_text && !row.original_text.startsWith("Voice Note")
+                    ? row.original_text
+                    : `Voice note from ${row.sender_name || "sender"}.`)
+                : (translatedText && !translatedText.startsWith("Voice Note")
+                    ? translatedText
+                    : (row.original_text || "Voice note."));
+              const speakLang = isViewerSender ? (row.sender_language || "en") : (targetLang || userLanguage || "en");
+              const tts = await dubbingService.synthesizeSpeech(textToSpeak, speakLang);
+              if (tts?.audioDataUri) {
+                resolvedAudioUrl = tts.audioDataUri;
+                pool.query("UPDATE messages SET audio_url = $1 WHERE id = $2", [resolvedAudioUrl, row.id]).catch(() => {});
+              }
+            } catch (err) {
+              console.warn("getMessages on-the-fly voice synthesis error:", err);
+            }
           }
 
           return {
@@ -425,9 +455,9 @@ else if (userLanguage) {
             translatedText,
             targetLanguage: targetLang,
             targetLanguageFlag: targetFlag,
-            messageType: row.message_type || "text",
-            audioUrl: row.audio_url,
-            audioDuration: row.audio_duration,
+            messageType: isAudioType ? "audio" : (row.message_type || "text"),
+            audioUrl: resolvedAudioUrl,
+            audioDuration: row.audio_duration || "0:02",
             mediaUrl: row.media_url,
             timestamp: new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
             createdAt: row.created_at,
@@ -565,9 +595,63 @@ else if (userLanguage) {
       let resolvedOriginalText = cleanText;
       let translatedText = cleanText;
       let finalAudioUrl = audioUrl;
+      let finalMediaUrl = mediaUrl || (messageType === "audio" && req.body.audioBase64 ? req.body.audioBase64 : null);
 
-      // Perform real-time AI translation into recipient's language
-      if (cleanText && resolvedTargetLanguage) {
+      if (messageType === "audio") {
+        // 🎙️ VOICE NOTE PIPELINE
+        let audioBuffer: Buffer | null = null;
+        if (req.body.audioBase64) {
+          const rawBase64 = req.body.audioBase64.replace(/^data:audio\/[^;]+;base64,/, "");
+          try {
+            audioBuffer = Buffer.from(rawBase64, "base64");
+          } catch (e) {
+            console.warn("Failed to parse audioBase64 buffer:", e);
+          }
+        } else if (audioUrl && audioUrl.startsWith("http")) {
+          try {
+            const audioRes = await fetch(audioUrl);
+            if (audioRes.ok) {
+              const arrayBuffer = await audioRes.arrayBuffer();
+              audioBuffer = Buffer.from(arrayBuffer);
+            }
+          } catch (e) {
+            console.warn("Failed to fetch audioUrl buffer:", e);
+          }
+        }
+
+        if (audioBuffer) {
+          try {
+            const s2sResult = await translationService.translateSpeech(
+              audioBuffer,
+              senderLanguage,
+              resolvedTargetLanguage
+            );
+            if (s2sResult) {
+              if (s2sResult.translation) translatedText = s2sResult.translation;
+              if (s2sResult.transcription) resolvedOriginalText = s2sResult.transcription;
+              if (s2sResult.audio_url) finalAudioUrl = s2sResult.audio_url;
+            }
+          } catch (audioErr) {
+            console.warn("Audio translation error:", audioErr);
+          }
+        }
+
+        // Guarantee playable audio for recipient via TTS in target language
+        if (!finalAudioUrl || !finalAudioUrl.trim()) {
+          try {
+            const speakText = translatedText && !translatedText.startsWith("Voice Note")
+              ? translatedText
+              : (cleanText && !cleanText.startsWith("Voice Note") ? cleanText : `Voice message from ${senderName || "user"}.`);
+            const ttsRes = await dubbingService.synthesizeSpeech(speakText, resolvedTargetLanguage);
+            if (ttsRes?.audioDataUri) {
+              finalAudioUrl = ttsRes.audioDataUri;
+            }
+          } catch (ttsErr) {
+            console.warn("Voice note recipient TTS fallback error:", ttsErr);
+          }
+        }
+      } else if (cleanText && resolvedTargetLanguage) {
+        // Perform real-time AI translation into recipient's language
         try {
           const transResult = await translationService.translateText(
             cleanText,
@@ -579,38 +663,6 @@ else if (userLanguage) {
           resolvedTargetLanguageFlag = transResult.targetLanguageFlag;
         } catch (transErr) {
           console.warn("Real-time message translation error, using original text:", transErr);
-        }
-      } else if (messageType === "audio" && (req.body.audioBase64 || audioUrl)) {
-        // Genesia Audio Speech-to-Speech Integration
-        try {
-          let audioBuffer: Buffer | null = null;
-          if (req.body.audioBase64) {
-            audioBuffer = Buffer.from(req.body.audioBase64, "base64");
-          } else if (audioUrl && audioUrl.startsWith("http")) {
-            const audioRes = await fetch(audioUrl);
-            if (audioRes.ok) {
-              const arrayBuffer = await audioRes.arrayBuffer();
-              audioBuffer = Buffer.from(arrayBuffer);
-            }
-          }
-
-          if (audioBuffer) {
-            const s2sResult = await translationService.translateSpeech(
-              audioBuffer,
-              senderLanguage,
-              resolvedTargetLanguage
-            );
-
-            if (s2sResult) {
-              translatedText = s2sResult.translation;
-              resolvedOriginalText = s2sResult.transcription;
-              if (s2sResult.audio_url) {
-                finalAudioUrl = s2sResult.audio_url;
-              }
-            }
-          }
-        } catch (audioErr) {
-          console.warn("Audio translation error:", audioErr);
         }
       }
 
@@ -733,7 +785,7 @@ else if (userLanguage) {
           messageType,
           finalAudioUrl,
           audioDuration,
-          mediaUrl,
+          finalMediaUrl,
         ]
       );
 
@@ -785,7 +837,7 @@ else if (userLanguage) {
           targetLanguage: msgRow.target_language,
           targetLanguageFlag: msgRow.target_language_flag,
           messageType: msgRow.message_type,
-          audioUrl: msgRow.audio_url,
+          audioUrl: msgRow.media_url || msgRow.audio_url,
           audioDuration: msgRow.audio_duration,
           mediaUrl: msgRow.media_url,
           timestamp: new Date(msgRow.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
