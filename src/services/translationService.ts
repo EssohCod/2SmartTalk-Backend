@@ -324,7 +324,53 @@ export interface TranslationResult {
 }
 
 /**
- * 1. OpenAI Translation Engine (GPT-4o-mini / GPT-4o)
+ * 1. Genesia Custom Translation API
+ * Primary translation engine hosted on Vercel.
+ */
+async function translateWithGenesia(
+  text: string,
+  targetLang: string,
+  sourceLang?: string
+): Promise<string | null> {
+  try {
+    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        targetLanguage: targetLang,
+        sourceLanguage: sourceLang || "auto",
+      }),
+    });
+
+    if (!response.ok) {
+      // Fallback to root if /api/translate doesn't exist
+      const fallbackResponse = await fetch("https://genesia-translation-api-five.vercel.app/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          targetLanguage: targetLang,
+          sourceLanguage: sourceLang || "auto",
+        }),
+      });
+      if (fallbackResponse.ok) {
+        const data: any = await fallbackResponse.json();
+        return data.translatedText || data.translation || null;
+      }
+      return null;
+    }
+
+    const data: any = await response.json();
+    return data.translatedText || data.translation || null;
+  } catch (error) {
+    console.warn("[Genesia Translation] API error:", error);
+    return null;
+  }
+}
+
+/**
+ * 2. OpenAI Translation Engine (GPT-4o-mini / GPT-4o)
  * Highest accuracy, contextual conversational understanding, handles slang/typos.
  */
 async function translateWithOpenAI(
@@ -598,6 +644,7 @@ export const translationService = {
    */
   getEngineStatus() {
     return {
+      genesia: true, // Custom API is always considered available as primary
       openai: Boolean(env.translation.openaiApiKey),
       openaiModel: env.translation.openaiModel,
       gemini: Boolean(env.translation.geminiApiKey),
@@ -672,7 +719,10 @@ export const translationService = {
     const preferred = env.translation.preferredEngine.toLowerCase();
 
     // Strategy 1: Explicit preference if configured
-    if (preferred === "openai" && env.translation.openaiApiKey) {
+    if (preferred === "genesia") {
+      translated = await translateWithGenesia(cleanText, targetObj.name, sourceObj.name);
+      if (translated) engineUsed = "genesia-custom-api";
+    } else if (preferred === "openai" && env.translation.openaiApiKey) {
       translated = await translateWithOpenAI(cleanText, targetObj.name, sourceObj.name);
       if (translated) engineUsed = `openai (${env.translation.openaiModel})`;
     } else if (preferred === "gemini" && env.translation.geminiApiKey) {
@@ -686,7 +736,12 @@ export const translationService = {
       if (translated) engineUsed = "google-cloud";
     }
 
-    // Strategy 2: Automatic Cascade (OpenAI -> Gemini -> DeepL -> Google Cloud -> Free Neural)
+    // Strategy 2: Automatic Cascade (Genesia -> OpenAI -> Gemini -> DeepL -> Google Cloud -> Free Neural)
+    if (!translated) {
+      translated = await translateWithGenesia(cleanText, targetObj.name, sourceObj.name);
+      if (translated) engineUsed = "genesia-custom-api";
+    }
+
     if (!translated && env.translation.openaiApiKey) {
       translated = await translateWithOpenAI(cleanText, targetObj.name, sourceObj.name);
       if (translated) engineUsed = `openai (${env.translation.openaiModel})`;
