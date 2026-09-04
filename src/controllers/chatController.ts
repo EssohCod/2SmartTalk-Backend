@@ -292,10 +292,34 @@ export const chatController = {
         return;
       }
 
-      const result = await pool.query(
+      let targetConvId = id;
+      let result = await pool.query(
         "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
-        [id]
+        [targetConvId]
       );
+
+      // If no messages found, check if `id` is a contact ID or participant ID belonging to an existing conversation
+      if (result.rows.length === 0) {
+        const linkedConv = await pool.query(
+          `SELECT id FROM conversations
+           WHERE id = $1
+              OR participants::text ILIKE $2
+              OR id IN (
+                SELECT user_id FROM contacts WHERE id = $1 OR contact_user_id = $1
+                UNION
+                SELECT contact_user_id FROM contacts WHERE id = $1 OR user_id = $1
+              )
+           LIMIT 1`,
+          [id, `%"${id}"%`]
+        );
+        if (linkedConv.rows.length > 0 && linkedConv.rows[0].id !== id) {
+          targetConvId = linkedConv.rows[0].id;
+          result = await pool.query(
+            "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
+            [targetConvId]
+          );
+        }
+      }
 
       const messages = await Promise.all(
         result.rows.map(async (row) => {
@@ -532,7 +556,7 @@ else if (userLanguage) {
         }
       }
 
-      if (!text && !audioUrl && !mediaUrl) {
+      if (!text && !audioUrl && !mediaUrl && !req.body.audioBase64) {
         res.status(400).json({ error: "Message text or media is required." });
         return;
       }

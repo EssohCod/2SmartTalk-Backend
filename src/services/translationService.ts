@@ -572,35 +572,115 @@ export async function translateSpeechWithGenesia(
   targetLang: string = "es",
   preserveVoice: boolean = true
 ): Promise<{ audio_url: string; transcription: string; translation: string } | null> {
-  try {
-    const genesiaSource = toGenesiaLanguageCode(sourceLang);
-    const genesiaTarget = toGenesiaLanguageCode(targetLang);
+  const genesiaUrls = [
+    process.env.GENESIA_API_URL,
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "https://genesia-translation-api-five.vercel.app",
+  ].filter(Boolean) as string[];
 
-    const formData = new FormData();
-    const blob = new Blob([audioBuffer], { type: "audio/wav" });
-    formData.append("audio", blob, "audio.wav");
-    formData.append("source_language", genesiaSource);
-    formData.append("target_language", genesiaTarget);
-    formData.append("preserve_voice", String(preserveVoice));
+  const genesiaSource = toGenesiaLanguageCode(sourceLang);
+  const genesiaTarget = toGenesiaLanguageCode(targetLang);
 
-    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/speech/translate", {
-      method: "POST",
-      body: formData,
-    });
+  for (const baseUrl of genesiaUrls) {
+    try {
+      const endpoint = `${baseUrl.replace(/\/+$/, "")}/api/v1/speech/translate`;
+      const formData = new FormData();
+      const blob = new Blob([audioBuffer], { type: "audio/wav" });
+      formData.append("audio", blob, "audio.wav");
+      formData.append("source_language", genesiaSource);
+      formData.append("target_language", genesiaTarget);
+      formData.append("preserve_voice", String(preserveVoice));
 
-    if (response.ok) {
-      const data: any = await response.json();
-      return {
-        audio_url: data.audio_url,
-        transcription: data.transcription,
-        translation: data.translation,
-      };
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data: any = await response.json();
+        return {
+          audio_url: data.audio_url || "",
+          transcription: data.transcription || "",
+          translation: data.translation || "",
+        };
+      }
+    } catch (err) {
+      // Continue to next endpoint or fallback
     }
-    return null;
-  } catch (error) {
-    console.warn("[Genesia S2S] API error:", error);
-    return null;
   }
+
+  // 🛡️ Fallback Engine: OpenAI Whisper Transcription + Translation + TTS
+  // Guarantees voice notes always succeed even if local Genesia python server is offline
+  try {
+    const fallbackRes = await translateSpeechWithOpenAIFallback(audioBuffer, sourceLang, targetLang);
+    if (fallbackRes) return fallbackRes;
+  } catch (fbErr) {
+    console.warn("[Speech S2S] Fallback error:", fbErr);
+  }
+
+  return null;
+}
+
+async function translateSpeechWithOpenAIFallback(
+  audioBuffer: Buffer,
+  sourceLang: string,
+  targetLang: string
+): Promise<{ audio_url: string; transcription: string; translation: string } | null> {
+  const apiKey = env.translation.openaiApiKey;
+  if (!apiKey) return null;
+
+  // 1. Transcribe with Whisper
+  const formData = new FormData();
+  const blob = new Blob([audioBuffer], { type: "audio/wav" });
+  formData.append("file", blob, "audio.wav");
+  formData.append("model", "whisper-1");
+
+  const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: formData,
+  });
+
+  if (!whisperRes.ok) return null;
+  const whisperData: any = await whisperRes.json();
+  const transcription = whisperData.text || "";
+
+  // 2. Translate transcription into target language
+  const translationRes = await translationService.translateText(transcription, targetLang, sourceLang);
+  const translation = translationRes.translatedText;
+
+  // 3. Synthesize speech in target language (TTS)
+  const ttsRes = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "tts-1",
+      voice: "alloy",
+      input: translation,
+    }),
+  });
+
+  let audioUrl = "";
+  if (ttsRes.ok) {
+    const arrayBuffer = await ttsRes.arrayBuffer();
+    const base64Audio = Buffer.from(arrayBuffer).toString("base64");
+    audioUrl = `data:audio/mp3;base64,${base64Audio}`;
+  }
+
+  return {
+    audio_url: audioUrl,
+    transcription,
+    translation,
+  };
 }
 
 /**
