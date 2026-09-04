@@ -455,19 +455,43 @@ export const callController = {
   async translateCallSpeech(req: Request, res: Response): Promise<void> {
     try {
       const preferredLanguage = await resolvePreferredLanguage(req);
-      const { text, sourceLanguage = "auto", targetLanguage = preferredLanguage.language } = req.body;
+      const {
+        text,
+        audioBase64,
+        sourceLanguage = "en",
+        targetLanguage = preferredLanguage.language
+      } = req.body;
 
-      if (!text || !text.trim()) {
-        res.status(400).json({ error: "Speech transcript text is required." });
+      if (!text && !audioBase64) {
+        res.status(400).json({ error: "Speech transcript text or audio data is required." });
         return;
       }
 
-      const cleanText = text.trim();
-      let translatedText = cleanText;
+      let originalText = text?.trim() || "";
+      let translatedText = originalText;
+      let audioUrl = null;
 
-      if (normalizeLanguageCode(sourceLanguage) !== normalizeLanguageCode(targetLanguage)) {
+      if (audioBase64) {
+        // Genesia Speech-to-Speech Integration
+        try {
+          const audioBuffer = Buffer.from(audioBase64, "base64");
+          const s2sResult = await translationService.translateSpeech(
+            audioBuffer,
+            sourceLanguage,
+            targetLanguage
+          );
+
+          if (s2sResult) {
+            originalText = s2sResult.transcription;
+            translatedText = s2sResult.translation;
+            audioUrl = s2sResult.audio_url;
+          }
+        } catch (audioErr) {
+          console.warn("Call speech audio translation error:", audioErr);
+        }
+      } else if (originalText && normalizeLanguageCode(sourceLanguage) !== normalizeLanguageCode(targetLanguage)) {
         const transResult = await translationService.translateText(
-          cleanText,
+          originalText,
           targetLanguage,
           sourceLanguage
         );
@@ -476,10 +500,11 @@ export const callController = {
 
       res.status(200).json({
         success: true,
-        originalText: cleanText,
+        originalText,
         sourceLanguage,
         translatedText,
         targetLanguage,
+        audioUrl,
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {

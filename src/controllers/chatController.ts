@@ -185,6 +185,8 @@ export const chatController = {
       const id = req.params.id as string;
       const preferredLanguage = await resolvePreferredLanguage(req);
       const authenticatedUser = (req as any).user;
+      const viewerUserId = authenticatedUser?.userId || authenticatedUser?.id || (req.headers["x-user-id"] as string);
+
       const userLanguage =
         (req.query.userLanguage as string) ||
         (req.headers["x-user-language"] as string) ||
@@ -219,8 +221,20 @@ export const chatController = {
           let targetLang = row.target_language || "English";
           let targetFlag = row.target_language_flag || "🇺🇸";
 
-          // If requesting participant has a specific signed-up language, ensure text is translated to THEIR language
-          if (userLanguage && row.original_text) {
+          // 🛡️ CRITICAL FIX: If the viewer IS the sender, we show them the original recipient's translation.
+          // This avoids the "reverting to English" bug where the sender sees their own message translated back to their language.
+          const isViewerSender =
+            (viewerUserId && row.sender_id === viewerUserId) ||
+            (authenticatedUser?.username && row.sender_username === authenticatedUser.username) ||
+            (authenticatedUser?.name && row.sender_name === authenticatedUser.name);
+
+          if (isViewerSender) {
+            // Keep the DB's translation (which is the one meant for the recipient)
+            translatedText = row.translated_text || row.original_text;
+            targetLang = row.target_language;
+            targetFlag = row.target_language_flag;
+          } else if (userLanguage && row.original_text) {
+            // For INCOMING messages (viewer is NOT sender), translate to viewer's language
             const senderLang = row.sender_language || "English";
             if (
               normalizeLanguageCode(row.target_language) === normalizeLanguageCode(userLanguage) &&
@@ -336,7 +350,9 @@ export const chatController = {
       }
 
       const cleanText = (text || "").trim();
+      let resolvedOriginalText = cleanText;
       let translatedText = cleanText;
+      let finalAudioUrl = audioUrl;
 
       // Perform real-time AI translation into recipient's language
       if (cleanText && resolvedTargetLanguage) {
@@ -351,6 +367,38 @@ export const chatController = {
           resolvedTargetLanguageFlag = transResult.targetLanguageFlag;
         } catch (transErr) {
           console.warn("Real-time message translation error, using original text:", transErr);
+        }
+      } else if (messageType === "audio" && (req.body.audioBase64 || audioUrl)) {
+        // Genesia Audio Speech-to-Speech Integration
+        try {
+          let audioBuffer: Buffer | null = null;
+          if (req.body.audioBase64) {
+            audioBuffer = Buffer.from(req.body.audioBase64, "base64");
+          } else if (audioUrl && audioUrl.startsWith("http")) {
+            const audioRes = await fetch(audioUrl);
+            if (audioRes.ok) {
+              const arrayBuffer = await audioRes.arrayBuffer();
+              audioBuffer = Buffer.from(arrayBuffer);
+            }
+          }
+
+          if (audioBuffer) {
+            const s2sResult = await translationService.translateSpeech(
+              audioBuffer,
+              senderLanguage,
+              resolvedTargetLanguage
+            );
+
+            if (s2sResult) {
+              translatedText = s2sResult.translation;
+              resolvedOriginalText = s2sResult.transcription;
+              if (s2sResult.audio_url) {
+                finalAudioUrl = s2sResult.audio_url;
+              }
+            }
+          }
+        } catch (audioErr) {
+          console.warn("Audio translation error:", audioErr);
         }
       }
 
@@ -400,7 +448,7 @@ export const chatController = {
                  last_message = $3,
                  last_message_time = NOW()
              WHERE id = $4`,
-            [convTitle, convAvatar, cleanText, convId]
+            [convTitle, convAvatar, cleanText || resolvedOriginalText, convId]
           );
         } else {
           // Insert with this exact contact/conversation ID
@@ -420,7 +468,7 @@ export const chatController = {
               convAvatar,
               convLang || "English",
               convFlag || "🌐",
-              cleanText,
+              cleanText || resolvedOriginalText,
             ]
           );
           convExists = true;
@@ -438,7 +486,7 @@ export const chatController = {
             convAvatar,
             convLang || "English",
             convFlag || "🌐",
-            cleanText,
+            cleanText || resolvedOriginalText,
           ]
         );
         convId = createConv.rows[0].id;
@@ -447,26 +495,27 @@ export const chatController = {
       // 1. Insert message
       const insertResult = await pool.query(
         `INSERT INTO messages (
-          conversation_id, sender_name, sender_username, sender_avatar,
+          conversation_id, sender_id, sender_name, sender_username, sender_avatar,
           sender_language, sender_language_flag, original_text,
           translated_text, target_language, target_language_flag,
           message_type, audio_url, audio_duration, media_url, created_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
         ) RETURNING *`,
         [
           convId,
+          (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null,
           senderName,
           senderUsername,
           senderAvatar,
           senderLanguage,
           senderLanguageFlag,
-          cleanText,
+          resolvedOriginalText,
           translatedText,
           resolvedTargetLanguage,
           resolvedTargetLanguageFlag,
           messageType,
-          audioUrl,
+          finalAudioUrl,
           audioDuration,
           mediaUrl,
         ]
@@ -479,7 +528,7 @@ export const chatController = {
         `UPDATE conversations
          SET last_message = $1, last_message_time = NOW(), unread_count = unread_count + 1
          WHERE id = $2`,
-        [cleanText, convId]
+        [cleanText || resolvedOriginalText, convId]
       );
 
       // 3. Send Push Notification to recipient
