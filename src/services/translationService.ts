@@ -324,6 +324,51 @@ export interface TranslationResult {
 }
 
 /**
+ * Maps ISO codes to Genesia's 3-letter code expectations
+ */
+export function toGenesiaLanguageCode(isoCode: string): string {
+  const code = isoCode.split("-")[0].toLowerCase();
+  const map: { [key: string]: string } = {
+    en: "eng",
+    fr: "fra",
+    es: "spa",
+    de: "deu",
+    it: "ita",
+    pt: "por",
+    ru: "rus",
+    zh: "zho",
+    ja: "jpn",
+    ko: "kor",
+    ar: "ara",
+    hi: "hin",
+    tr: "tur",
+    vi: "vie",
+    th: "tha",
+    nl: "nld",
+    pl: "pol",
+    uk: "ukr",
+    sv: "swe",
+    fi: "fin",
+    da: "dan",
+    no: "nor",
+    el: "ell",
+    he: "heb",
+    id: "ind",
+    ms: "msa",
+    tl: "tgl",
+    fa: "fas",
+    ur: "urd",
+    bn: "ben",
+    pa: "pan",
+    sw: "swa",
+    yo: "yor",
+    ig: "ibo",
+    ha: "hau",
+  };
+  return map[code] || "eng";
+}
+
+/**
  * 1. Genesia Custom Translation API
  * Primary translation engine hosted on Vercel.
  */
@@ -333,38 +378,125 @@ async function translateWithGenesia(
   sourceLang?: string
 ): Promise<string | null> {
   try {
-    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/translate", {
+    const target = toGenesiaLanguageCode(targetLang);
+    const source = sourceLang ? toGenesiaLanguageCode(sourceLang) : "eng";
+
+    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/translation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        targetLanguage: targetLang,
-        sourceLanguage: sourceLang || "auto",
+        target_language: target,
+        source_language: source,
       }),
     });
 
-    if (!response.ok) {
-      // Fallback to root if /api/translate doesn't exist
-      const fallbackResponse = await fetch("https://genesia-translation-api-five.vercel.app/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          targetLanguage: targetLang,
-          sourceLanguage: sourceLang || "auto",
-        }),
-      });
-      if (fallbackResponse.ok) {
-        const data: any = await fallbackResponse.json();
-        return data.translatedText || data.translation || null;
-      }
-      return null;
+    if (response.ok) {
+      const data: any = await response.json();
+      return data.translated_text || data.translation || null;
     }
-
-    const data: any = await response.json();
-    return data.translatedText || data.translation || null;
+    return null;
   } catch (error) {
     console.warn("[Genesia Translation] API error:", error);
+    return null;
+  }
+}
+
+/**
+ * Genesia ASR: Speech-to-Text
+ */
+export async function transcribeAudioWithGenesia(
+  audioBuffer: Buffer,
+  languageCode: string = "en"
+): Promise<string | null> {
+  try {
+    const genesiaLang = toGenesiaLanguageCode(languageCode);
+    const formData = new FormData();
+    const blob = new Blob([audioBuffer], { type: "audio/wav" });
+    formData.append("audio", blob, "audio.wav");
+    formData.append("language", genesiaLang);
+
+    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/speech/transcribe", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (response.ok) {
+      const data: any = await response.json();
+      return data.transcription || data.text || null;
+    }
+    return null;
+  } catch (error) {
+    console.warn("[Genesia ASR] API error:", error);
+    return null;
+  }
+}
+
+/**
+ * Genesia TTS: Text-to-Speech
+ */
+export async function synthesizeSpeechWithGenesia(
+  text: string,
+  languageCode: string = "en"
+): Promise<string | null> {
+  try {
+    const genesiaLang = toGenesiaLanguageCode(languageCode);
+    const formData = new FormData();
+    formData.append("text", text);
+    formData.append("language", genesiaLang);
+
+    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/speech/synthesize", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (response.ok) {
+      const data: any = await response.json();
+      return data.audio_url || null;
+    }
+    return null;
+  } catch (error) {
+    console.warn("[Genesia TTS] API error:", error);
+    return null;
+  }
+}
+
+/**
+ * Genesia S2S: Speech-to-Speech Translation
+ */
+export async function translateSpeechWithGenesia(
+  audioBuffer: Buffer,
+  sourceLang: string = "en",
+  targetLang: string = "es",
+  preserveVoice: boolean = true
+): Promise<{ audio_url: string; transcription: string; translation: string } | null> {
+  try {
+    const genesiaSource = toGenesiaLanguageCode(sourceLang);
+    const genesiaTarget = toGenesiaLanguageCode(targetLang);
+
+    const formData = new FormData();
+    const blob = new Blob([audioBuffer], { type: "audio/wav" });
+    formData.append("audio", blob, "audio.wav");
+    formData.append("source_language", genesiaSource);
+    formData.append("target_language", genesiaTarget);
+    formData.append("preserve_voice", String(preserveVoice));
+
+    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/speech/translate", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (response.ok) {
+      const data: any = await response.json();
+      return {
+        audio_url: data.audio_url,
+        transcription: data.transcription,
+        translation: data.translation,
+      };
+    }
+    return null;
+  } catch (error) {
+    console.warn("[Genesia S2S] API error:", error);
     return null;
   }
 }
@@ -820,6 +952,32 @@ export const translationService = {
       targetLanguage: r.targetLanguage,
       engine: r.engine,
     }));
+  },
+
+  /**
+   * Genesia ASR: Speech-to-Text
+   */
+  async transcribeAudio(audioBuffer: Buffer, languageCode: string = "eng"): Promise<string | null> {
+    return transcribeAudioWithGenesia(audioBuffer, languageCode);
+  },
+
+  /**
+   * Genesia TTS: Text-to-Speech
+   */
+  async synthesizeSpeech(text: string, languageCode: string = "fra"): Promise<string | null> {
+    return synthesizeSpeechWithGenesia(text, languageCode);
+  },
+
+  /**
+   * Genesia S2S: Speech-to-Speech Translation
+   */
+  async translateSpeech(
+    audioBuffer: Buffer,
+    sourceLang: string = "eng",
+    targetLang: string = "spa",
+    preserveVoice: boolean = true
+  ) {
+    return translateSpeechWithGenesia(audioBuffer, sourceLang, targetLang, preserveVoice);
   },
 };
 

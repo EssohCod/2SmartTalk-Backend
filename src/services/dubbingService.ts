@@ -111,8 +111,32 @@ export const dubbingService = {
     }
 
     try {
-      // High-speed neural Google TTS audio synthesis
-      const encodedText = encodeURIComponent(cleanText.slice(0, 500)); // Cap to safe single chunk
+      // 1. Try Genesia Custom TTS Primary
+      const genesiaAudioUrl = await translationService.synthesizeSpeech(cleanText, langCode);
+      if (genesiaAudioUrl) {
+        const audioRes = await fetch(genesiaAudioUrl);
+        if (audioRes.ok) {
+          const arrayBuffer = await audioRes.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          const base64 = buffer.toString("base64");
+          const dataUri = `data:audio/wav;base64,${base64}`;
+
+          const wordCount = cleanText.split(/\s+/).length;
+          const estimatedSeconds = Math.max(1, Math.round((wordCount / 150) * 60 * 10) / 10);
+
+          return {
+            audioBase64: base64,
+            audioDataUri: dataUri,
+            audioFormat: "wav",
+            durationSeconds: estimatedSeconds,
+            voiceGender: gender,
+            languageCode: langCode,
+          };
+        }
+      }
+
+      // 2. Fallback: High-speed neural Google TTS audio synthesis
+      const encodedText = encodeURIComponent(cleanText.slice(0, 500));
       const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedText}&tl=${langCode}&client=tw-ob`;
 
       const response = await fetch(ttsUrl, {

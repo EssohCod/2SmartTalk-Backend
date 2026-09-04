@@ -65,7 +65,74 @@ export const dubbingController = {
   },
 
   /**
-   * 3. Get Available Voice Profiles
+   * 3. Genesia Speech-to-Speech (S2S) Pipeline
+   * POST /api/dubbing/speech-to-speech
+   */
+  async speechToSpeech(req: Request, res: Response): Promise<void> {
+    try {
+      const {
+        audioBase64,
+        sourceLanguage = "en",
+        targetLanguage = "es",
+        preserveVoice = true,
+      } = req.body;
+
+      if (!audioBase64) {
+        res.status(400).json({ error: "Audio data (base64) is required for speech translation." });
+        return;
+      }
+
+      const audioBuffer = Buffer.from(audioBase64, "base64");
+      const result = await translationService.translateSpeech(
+        audioBuffer,
+        sourceLanguage,
+        targetLanguage,
+        preserveVoice
+      );
+
+      if (!result) {
+        res.status(500).json({ error: "Genesia speech translation failed." });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        ...result,
+      });
+    } catch (error: any) {
+      console.error("DubbingController.speechToSpeech error:", error);
+      res.status(500).json({ error: "Speech-to-speech translation failed." });
+    }
+  },
+
+  /**
+   * 4. Genesia Speech-to-Text (ASR)
+   * POST /api/dubbing/transcribe
+   */
+  async transcribe(req: Request, res: Response): Promise<void> {
+    try {
+      const { audioBase64, languageCode = "en" } = req.body;
+
+      if (!audioBase64) {
+        res.status(400).json({ error: "Audio data (base64) is required for transcription." });
+        return;
+      }
+
+      const audioBuffer = Buffer.from(audioBase64, "base64");
+      const transcription = await translationService.transcribeAudio(audioBuffer, languageCode);
+
+      res.status(200).json({
+        success: true,
+        transcription,
+      });
+    } catch (error: any) {
+      console.error("DubbingController.transcribe error:", error);
+      res.status(500).json({ error: "Transcription failed." });
+    }
+  },
+
+  /**
+   * 5. Get Available Voice Profiles
    */
   async getVoices(req: Request, res: Response): Promise<void> {
     try {
