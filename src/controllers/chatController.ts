@@ -462,7 +462,6 @@ else if (userLanguage) {
       let convAvatar = recipientAvatar || null;
       let convLang = resolvedTargetLanguage;
       let convFlag = resolvedTargetLanguageFlag;
-      const currentUserId = (req as any).user?.userId || (req as any).user?.id || (req.headers["x-user-id"] as string) || null;
 
       if (isUuid(convId)) {
         // Look up in contacts table

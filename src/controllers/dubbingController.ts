@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { dubbingService } from "../services/dubbingService";
+import { translationService } from "../services/translationService";
 
 export const dubbingController = {
   /**
