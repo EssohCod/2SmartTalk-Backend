@@ -337,6 +337,30 @@ export const callController = {
         ]
       );
 
+      try {
+        const cleanCallee = (row.callee_username || "").replace(/^@/, "").trim();
+        const calleeLookup = await pool.query(
+          "SELECT email FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
+          [cleanCallee]
+        );
+        const calleeEmail = calleeLookup.rows[0]?.email;
+        if (calleeEmail) {
+          await pool.query(
+            `INSERT INTO notifications (user_email, category, title, description, is_unread, created_at)
+             VALUES ($1, 'system', 'Missed Call', $2, true, NOW())`,
+            [calleeEmail, `You missed a call from ${row.caller_name || "Someone"}.`]
+          );
+          await sendExpoPushNotification(
+            calleeEmail,
+            "Missed Call",
+            `You missed a call from ${row.caller_name || "Someone"}.`,
+            { type: "missed_call" }
+          );
+        }
+      } catch (notifErr) {
+        console.warn("Could not send missed call push notification:", notifErr);
+      }
+
       res.status(200).json({
         success: true,
         message: "Call declined.",

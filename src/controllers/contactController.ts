@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
+import { sendExpoPushNotification } from "./notificationController";
 
 export const contactController = {
   /**
@@ -146,6 +147,28 @@ export const contactController = {
              )`,
           [contactUserId, userId]
         );
+
+        try {
+          const adder = await pool.query("SELECT name FROM users WHERE id = $1", [userId]);
+          const target = await pool.query("SELECT email FROM users WHERE id = $1", [contactUserId]);
+          const adderName = adder.rows[0]?.name || cleanName || "Someone";
+          const targetEmail = target.rows[0]?.email;
+          if (targetEmail) {
+            await pool.query(
+              `INSERT INTO notifications (user_id, user_email, category, title, description, is_unread, created_at)
+               VALUES ($1, $2, 'system', 'New Contact Added', $3, true, NOW())`,
+              [contactUserId, targetEmail, `${adderName} added you to their contact list.`]
+            );
+            await sendExpoPushNotification(
+              targetEmail,
+              "New Contact Added",
+              `${adderName} added you to their contact list.`,
+              { type: "new_contact" }
+            );
+          }
+        } catch (notifErr) {
+          console.warn("Could not send contact push notification:", notifErr);
+        }
       };
 
       // Prevent duplicate contacts
