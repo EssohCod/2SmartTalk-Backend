@@ -158,6 +158,8 @@ export interface ResolvedLanguagePreference {
   enabled: boolean;
 }
 
+const userLanguageCache = new Map<string, { preference: ResolvedLanguagePreference; timestamp: number }>();
+
 export async function resolvePreferredLanguage(context?: any): Promise<ResolvedLanguagePreference> {
   const user = context?.user || context || {};
   const headers = context?.headers || {};
@@ -188,24 +190,47 @@ export async function resolvePreferredLanguage(context?: any): Promise<ResolvedL
   let flag = explicitFlag || "🇺🇸";
   let enabled = user?.liveTranslationEnabled ?? user?.live_translation_enabled ?? true;
 
+  // If explicitLanguage was already supplied by client, return immediately without DB query
+  if (explicitLanguage) {
+    return {
+      language,
+      code,
+      flag,
+      enabled: enabled !== false,
+    };
+  }
+
   const userId = user?.userId || user?.id || (headers["x-user-id"] as string) || (query.userId as string) || (body.userId as string);
   const email = user?.email || (headers["x-user-email"] as string) || (query.userEmail as string) || (query.email as string) || (body.email as string);
 
   if (userId || email) {
-    const result = await pool.query(
-      `SELECT native_language, native_language_code, native_language_flag, live_translation_enabled
-       FROM users
-       WHERE id = $1 OR LOWER(email) = LOWER($2)
-       LIMIT 1`,
-      [userId || "00000000-0000-0000-0000-000000000000", email || ""]
-    );
+    const cacheKey = `${userId || ""}:${email || ""}`;
+    const cached = userLanguageCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 60000) {
+      return cached.preference;
+    }
 
-    const row = result.rows[0];
-    if (row) {
-      language = explicitLanguage || row.native_language || language;
-      code = explicitCode || row.native_language_code || code;
-      flag = explicitFlag || row.native_language_flag || flag;
-      enabled = user?.liveTranslationEnabled ?? user?.live_translation_enabled ?? (row.live_translation_enabled !== false);
+    try {
+      const result = await pool.query(
+        `SELECT native_language, native_language_code, native_language_flag, live_translation_enabled
+         FROM users
+         WHERE id = $1 OR LOWER(email) = LOWER($2)
+         LIMIT 1`,
+        [userId || "00000000-0000-0000-0000-000000000000", email || ""]
+      );
+
+      const row = result.rows[0];
+      if (row) {
+        language = explicitLanguage || row.native_language || language;
+        code = explicitCode || row.native_language_code || code;
+        flag = explicitFlag || row.native_language_flag || flag;
+        enabled = user?.liveTranslationEnabled ?? user?.live_translation_enabled ?? (row.live_translation_enabled !== false);
+      }
+      const pref = { language, code, flag, enabled: enabled !== false };
+      userLanguageCache.set(cacheKey, { preference: pref, timestamp: Date.now() });
+      return pref;
+    } catch (e) {
+      console.warn("resolvePreferredLanguage query warning:", e);
     }
   }
 

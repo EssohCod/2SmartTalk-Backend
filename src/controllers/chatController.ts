@@ -8,6 +8,27 @@ function isUuid(str: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
 }
 
+const userProfileCache = new Map<string, { user: any; expiresAt: number }>();
+async function getCachedUser(userId: string) {
+  if (!userId) return null;
+  const now = Date.now();
+  const cached = userProfileCache.get(userId);
+  if (cached && cached.expiresAt > now) {
+    return cached.user;
+  }
+  try {
+    const res = await pool.query(
+      "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
+      [userId]
+    );
+    const user = res.rows[0] || null;
+    userProfileCache.set(userId, { user, expiresAt: now + 60000 });
+    return user;
+  } catch {
+    return null;
+  }
+}
+
 export const chatController = {
   /**
    * 1. Get All Conversations (Direct & Groups)
@@ -64,15 +85,12 @@ export const chatController = {
 
           const otherParticipantId = participantsList.find((pId: string) => userId && pId !== userId);
           if (otherParticipantId) {
-            const partUser = await pool.query(
-              "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
-              [otherParticipantId]
-            );
-            if (partUser.rows.length > 0) {
-              displayName = partUser.rows[0].name;
-              displayAvatar = partUser.rows[0].avatar_url || displayAvatar;
-              recipientLang = partUser.rows[0].native_language || recipientLang;
-              recipientLangFlag = partUser.rows[0].native_language_flag || recipientLangFlag;
+            const partUser = await getCachedUser(otherParticipantId);
+            if (partUser) {
+              displayName = partUser.name;
+              displayAvatar = partUser.avatar_url || displayAvatar;
+              recipientLang = partUser.native_language || recipientLang;
+              recipientLangFlag = partUser.native_language_flag || recipientLangFlag;
               partnerFound = true;
             }
           }
@@ -88,15 +106,12 @@ export const chatController = {
             );
             if (msgSender.rows.length > 0) {
               const otherId = msgSender.rows[0].sender_id;
-              const uRes = await pool.query(
-                "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
-                [otherId]
-              );
-              if (uRes.rows.length > 0) {
-                displayName = uRes.rows[0].name;
-                displayAvatar = uRes.rows[0].avatar_url || displayAvatar;
-                recipientLang = uRes.rows[0].native_language || recipientLang;
-                recipientLangFlag = uRes.rows[0].native_language_flag || recipientLangFlag;
+              const uRes = await getCachedUser(otherId);
+              if (uRes) {
+                displayName = uRes.name;
+                displayAvatar = uRes.avatar_url || displayAvatar;
+                recipientLang = uRes.native_language || recipientLang;
+                recipientLangFlag = uRes.native_language_flag || recipientLangFlag;
                 partnerFound = true;
               } else {
                 displayName = msgSender.rows[0].sender_name;
@@ -299,26 +314,32 @@ export const chatController = {
         [targetConvId]
       );
 
-      // If no messages found, check if `id` is a contact ID or participant ID belonging to an existing conversation
+      // If no messages found, check if id is a known conversation. If yes, it is simply empty!
       if (result.rows.length === 0) {
-        const linkedConv = await pool.query(
-          `SELECT id FROM conversations
-           WHERE id = $1
-              OR participants::text ILIKE $2
-              OR id IN (
-                SELECT user_id FROM contacts WHERE id = $1 OR contact_user_id = $1
-                UNION
-                SELECT contact_user_id FROM contacts WHERE id = $1 OR user_id = $1
-              )
-           LIMIT 1`,
-          [id, `%"${id}"%`]
+        const directConv = await pool.query(
+          "SELECT id FROM conversations WHERE id = $1 LIMIT 1",
+          [id]
         );
-        if (linkedConv.rows.length > 0 && linkedConv.rows[0].id !== id) {
-          targetConvId = linkedConv.rows[0].id;
-          result = await pool.query(
-            "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
-            [targetConvId]
+        if (directConv.rows.length === 0) {
+          // Only check contacts/participants if `id` was NOT a conversation ID
+          const linkedConv = await pool.query(
+            `SELECT id FROM conversations
+             WHERE participants::text ILIKE $1
+                OR id IN (
+                  SELECT user_id FROM contacts WHERE id = $2 OR contact_user_id = $2
+                  UNION
+                  SELECT contact_user_id FROM contacts WHERE id = $2 OR user_id = $2
+                )
+             LIMIT 1`,
+            [`%"${id}"%`, id]
           );
+          if (linkedConv.rows.length > 0 && linkedConv.rows[0].id !== id) {
+            targetConvId = linkedConv.rows[0].id;
+            result = await pool.query(
+              "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
+              [targetConvId]
+            );
+          }
         }
       }
 
@@ -346,8 +367,14 @@ export const chatController = {
             // 🛡️ RECIPIENT TRANSLATION RECOVERY:
             // If targetLang was mistakenly saved as the same as sender_language,
             // resolve the other participant's language and translate into their language.
+            const isAudioType =
+              row.message_type === "audio" ||
+              (row.original_text && row.original_text.startsWith("Voice Note")) ||
+              (row.translated_text && row.translated_text.startsWith("Voice Note"));
+
+            // 🛡️ RECIPIENT TRANSLATION RECOVERY (Text messages only):
             const isSenderSameAsTarget = normalizeLanguageCode(targetLang) === normalizeLanguageCode(row.sender_language);
-            if (isSenderSameAsTarget && row.original_text && (!row.translated_text || row.translated_text === row.original_text)) {
+            if (!isAudioType && isSenderSameAsTarget && row.original_text && (!row.translated_text || row.translated_text === row.original_text)) {
               const otherUserRes = await pool.query(
                 `SELECT native_language, native_language_flag FROM users WHERE id != $1 AND LOWER(native_language) != LOWER($2) LIMIT 1`,
                 [row.sender_id || "00000000-0000-0000-0000-000000000000", row.sender_language]
@@ -374,38 +401,49 @@ export const chatController = {
               }
             }
           } else if (userLanguage && row.original_text) {
-            // RECEIVER PERSPECTIVE:
-            // We must ensure the PRIMARY text is translated into the viewer's language.
-            const senderLang = row.sender_language || "English";
+            const isAudioType =
+              row.message_type === "audio" ||
+              (row.original_text && row.original_text.startsWith("Voice Note")) ||
+              (row.translated_text && row.translated_text.startsWith("Voice Note"));
 
-            const isTargetMatched = normalizeLanguageCode(row.target_language) === normalizeLanguageCode(userLanguage);
-            const isSenderMatched = normalizeLanguageCode(senderLang) === normalizeLanguageCode(userLanguage);
-
-            if (isTargetMatched && row.translated_text) {
-              // DB already has the translation for this viewer
-              translatedText = row.translated_text;
+            if (isAudioType) {
+              translatedText = row.translated_text || row.original_text;
               targetLang = userLanguage;
               targetFlag = userLanguageFlag || row.target_language_flag || "🌐";
-            } else if (!isSenderMatched) {
-              // Viewer speaks a different language than the sender
-              // Trigger on-the-fly translation into viewer's language
-              try {
-                const transRes = await translationService.translateText(
-                  row.original_text,
-                  userLanguage,
-                  senderLang
-                );
-                translatedText = transRes.translatedText;
-                targetLang = userLanguage;
-                targetFlag = transRes.targetLanguageFlag || userLanguageFlag || "🌐";
-              } catch {
-                translatedText = row.translated_text || row.original_text;
-              }
             } else {
-              // Viewer and sender speak the same language
-              translatedText = row.original_text;
-              targetLang = userLanguage;
-              targetFlag = userLanguageFlag || "🇺🇸";
+              // RECEIVER PERSPECTIVE:
+              // We must ensure the PRIMARY text is translated into the viewer's language.
+              const senderLang = row.sender_language || "English";
+
+              const isTargetMatched = normalizeLanguageCode(row.target_language) === normalizeLanguageCode(userLanguage);
+              const isSenderMatched = normalizeLanguageCode(senderLang) === normalizeLanguageCode(userLanguage);
+
+              if (isTargetMatched && row.translated_text) {
+                // DB already has the translation for this viewer
+                translatedText = row.translated_text;
+                targetLang = userLanguage;
+                targetFlag = userLanguageFlag || row.target_language_flag || "🌐";
+              } else if (!isSenderMatched) {
+                // Viewer speaks a different language than the sender
+                // Trigger on-the-fly translation into viewer's language
+                try {
+                  const transRes = await translationService.translateText(
+                    row.original_text,
+                    userLanguage,
+                    senderLang
+                  );
+                  translatedText = transRes.translatedText;
+                  targetLang = userLanguage;
+                  targetFlag = transRes.targetLanguageFlag || userLanguageFlag || "🌐";
+                } catch {
+                  translatedText = row.translated_text || row.original_text;
+                }
+              } else {
+                // Viewer and sender speak the same language
+                translatedText = row.original_text;
+                targetLang = userLanguage;
+                targetFlag = userLanguageFlag || "🇺🇸";
+              }
             }
           } else if (userLanguage) {
             targetLang = userLanguage;
