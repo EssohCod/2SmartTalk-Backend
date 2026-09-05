@@ -347,7 +347,7 @@ export const chatController = {
             // If targetLang was mistakenly saved as the same as sender_language,
             // resolve the other participant's language and translate into their language.
             const isSenderSameAsTarget = normalizeLanguageCode(targetLang) === normalizeLanguageCode(row.sender_language);
-            if (isSenderSameAsTarget && row.original_text) {
+            if (isSenderSameAsTarget && row.original_text && (!row.translated_text || row.translated_text === row.original_text)) {
               const otherUserRes = await pool.query(
                 `SELECT native_language, native_language_flag FROM users WHERE id != $1 AND LOWER(native_language) != LOWER($2) LIMIT 1`,
                 [row.sender_id || "00000000-0000-0000-0000-000000000000", row.sender_language]
@@ -423,23 +423,25 @@ export const chatController = {
             : (row.audio_url || row.media_url);
 
           if (isAudioType && (!resolvedAudioUrl || !resolvedAudioUrl.trim())) {
-            try {
-              const textToSpeak = isViewerSender
-                ? (row.original_text && !row.original_text.startsWith("Voice Note")
-                    ? row.original_text
-                    : `Voice note from ${row.sender_name || "sender"}.`)
-                : (translatedText && !translatedText.startsWith("Voice Note")
-                    ? translatedText
-                    : (row.original_text || "Voice note."));
-              const speakLang = isViewerSender ? (row.sender_language || "en") : (targetLang || userLanguage || "en");
-              const tts = await dubbingService.synthesizeSpeech(textToSpeak, speakLang);
-              if (tts?.audioDataUri) {
-                resolvedAudioUrl = tts.audioDataUri;
-                pool.query("UPDATE messages SET audio_url = $1 WHERE id = $2", [resolvedAudioUrl, row.id]).catch(() => {});
+            // Asynchronously generate audio in background without blocking message response
+            setImmediate(async () => {
+              try {
+                const textToSpeak = isViewerSender
+                  ? (row.original_text && !row.original_text.startsWith("Voice Note")
+                      ? row.original_text
+                      : `Voice note from ${row.sender_name || "sender"}.`)
+                  : (translatedText && !translatedText.startsWith("Voice Note")
+                      ? translatedText
+                      : (row.original_text || "Voice note."));
+                const speakLang = isViewerSender ? (row.sender_language || "en") : (targetLang || userLanguage || "en");
+                const tts = await dubbingService.synthesizeSpeech(textToSpeak, speakLang);
+                if (tts?.audioDataUri) {
+                  pool.query("UPDATE messages SET audio_url = $1 WHERE id = $2", [tts.audioDataUri, row.id]).catch(() => {});
+                }
+              } catch (err) {
+                // Background TTS fallback
               }
-            } catch (err) {
-              console.warn("getMessages on-the-fly voice synthesis error:", err);
-            }
+            });
           }
 
           return {
