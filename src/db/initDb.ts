@@ -282,7 +282,22 @@ export async function initDb(): Promise<void> {
       );
     `);
 
-    // 10. Notifications Table
+    // 10. Call Audio Chunks Table (In-Call Two-Way Real-Time Voice Audio Exchange)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS call_audio_chunks (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        session_id UUID NOT NULL,
+        sender_name VARCHAR(255) NOT NULL,
+        sender_user_id VARCHAR(255),
+        audio_base64 TEXT NOT NULL,
+        sequence_id INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_call_audio_chunks_session ON call_audio_chunks(session_id, sequence_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_call_audio_chunks_created ON call_audio_chunks(created_at);
+    `);
+
+    // 11. Notifications Table
     await client.query(`
       CREATE TABLE IF NOT EXISTS notifications (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

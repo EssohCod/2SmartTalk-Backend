@@ -14,6 +14,8 @@ router.post("/:sessionId/decline", callController.declineCall);
 router.post("/:sessionId/end", callController.endCall);
 router.get("/:sessionId/status", callController.getSessionStatus);
 router.post("/:sessionId/translate-speech", callController.translateCallSpeech);
+router.post("/:sessionId/audio", callController.sendCallAudio);
+router.get("/:sessionId/audio", callController.getCallAudio);
 
 // 2. Call History Logs Endpoints
 router.get("/", callController.getCalls);

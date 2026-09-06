@@ -164,12 +164,20 @@ export const callController = {
     try {
       const callee = (req.query.callee as string) || "Emma Johnson";
 
-      // Find any ringing session created within last 45 seconds
+      // 1. Auto-expire any ringing call sessions older than 40 seconds into 'missed'
+      await pool.query(
+        `UPDATE call_sessions
+         SET status = 'missed', ended_at = NOW()
+         WHERE status = 'ringing'
+           AND started_at < NOW() - interval '40 seconds'`
+      );
+
+      // 2. Find any ringing session created within last 40 seconds
       const result = await pool.query(
         `SELECT * FROM call_sessions
          WHERE status = 'ringing'
            AND LOWER(callee_name) = LOWER($1)
-           AND started_at >= NOW() - interval '45 seconds'
+           AND started_at >= NOW() - interval '40 seconds'
          ORDER BY started_at DESC
          LIMIT 1`,
         [callee]
@@ -454,6 +462,19 @@ export const callController = {
 
       const row = result.rows[0];
 
+      // Auto-expire to 'missed' if ringing for 40+ seconds without response
+      if (row.status === "ringing" && row.started_at) {
+        const startTime = new Date(row.started_at).getTime();
+        const elapsedSecs = (Date.now() - startTime) / 1000;
+        if (elapsedSecs >= 40) {
+          await pool.query(
+            "UPDATE call_sessions SET status = 'missed', ended_at = NOW() WHERE id = $1",
+            [sessionId]
+          );
+          row.status = "missed";
+        }
+      }
+
       res.status(200).json({
         success: true,
         session: {
@@ -534,6 +555,90 @@ export const callController = {
     } catch (error: any) {
       console.error("CallController.translateCallSpeech error:", error);
       res.status(500).json({ error: "Failed to translate speech transcript." });
+    }
+  },
+
+  /**
+   * 7b. Send In-Call Audio Chunk (Real-Time Audio Stream from participant)
+   * POST /api/calls/:sessionId/audio
+   */
+  async sendCallAudio(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const { senderName, senderUserId, audioBase64, sequenceId = 1 } = req.body;
+
+      if (!sessionId || !audioBase64) {
+        res.status(400).json({ error: "Session ID and audioBase64 are required." });
+        return;
+      }
+
+      if (isUuid(sessionId)) {
+        await pool.query(
+          `INSERT INTO call_audio_chunks (session_id, sender_name, sender_user_id, audio_base64, sequence_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())`,
+          [sessionId, senderName || "Caller", senderUserId || null, audioBase64, Number(sequenceId) || 1]
+        );
+
+        // Prune older audio chunks (> 60 seconds) so DB stays tiny and fast
+        pool.query(
+          "DELETE FROM call_audio_chunks WHERE session_id = $1 AND created_at < NOW() - interval '60 seconds'",
+          [sessionId]
+        ).catch(() => {});
+      }
+
+      res.status(200).json({ success: true, sequenceId });
+    } catch (error: any) {
+      console.warn("CallController.sendCallAudio error:", error?.message || error);
+      res.status(200).json({ success: false, error: error?.message });
+    }
+  },
+
+  /**
+   * 7c. Get In-Call Audio Chunks (Incoming Audio from the other participant)
+   * GET /api/calls/:sessionId/audio
+   */
+  async getCallAudio(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const afterSeq = Number(req.query.afterSeq) || 0;
+      const excludeSender = (req.query.excludeSender as string) || "";
+
+      if (!sessionId || !isUuid(sessionId)) {
+        res.status(200).json({ success: true, chunks: [] });
+        return;
+      }
+
+      let queryText = `
+        SELECT id, sender_name, sender_user_id, audio_base64, sequence_id, created_at
+        FROM call_audio_chunks
+        WHERE session_id = $1
+          AND sequence_id > $2
+      `;
+      const params: any[] = [sessionId, afterSeq];
+
+      if (excludeSender && excludeSender.trim()) {
+        params.push(excludeSender.trim());
+        queryText += ` AND LOWER(sender_name) != LOWER($${params.length})`;
+      }
+
+      queryText += " ORDER BY sequence_id ASC LIMIT 10";
+
+      const result = await pool.query(queryText, params);
+
+      res.status(200).json({
+        success: true,
+        chunks: result.rows.map((r) => ({
+          id: r.id,
+          senderName: r.sender_name,
+          senderUserId: r.sender_user_id,
+          audioBase64: r.audio_base64,
+          sequenceId: r.sequence_id,
+          createdAt: r.created_at,
+        })),
+      });
+    } catch (error: any) {
+      console.warn("CallController.getCallAudio error:", error?.message || error);
+      res.status(200).json({ success: false, chunks: [] });
     }
   },
 
