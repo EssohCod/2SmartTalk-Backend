@@ -611,6 +611,93 @@ export const userController = {
       });
     }
   },
+
+  /**
+   * 9. Delete User Account Permanently & Cascade Purge Data
+   */
+  async deleteAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId =
+        req.user?.userId ||
+        (req.headers["x-user-id"] as string) ||
+        (req.query.userId as string) ||
+        req.body?.userId;
+
+      const email =
+        req.user?.email ||
+        (req.headers["x-user-email"] as string) ||
+        (req.query.email as string) ||
+        req.body?.email;
+
+      if (!userId && !email) {
+        res.status(400).json({ error: "User identifier (userId or email) is required to delete account." });
+        return;
+      }
+
+      // 1. Locate user in the database
+      let userRow: any = null;
+      if (userId) {
+        const result = await query(`SELECT * FROM users WHERE id::text = $1`, [userId]);
+        if (result.rows.length > 0) userRow = result.rows[0];
+      }
+      if (!userRow && email) {
+        const result = await query(`SELECT * FROM users WHERE LOWER(email) = LOWER($1)`, [email.trim()]);
+        if (result.rows.length > 0) userRow = result.rows[0];
+      }
+
+      if (!userRow) {
+        res.status(404).json({ error: "User not found or already deleted." });
+        return;
+      }
+
+      const targetId = userRow.id;
+      const targetEmail = userRow.email?.toLowerCase().trim();
+      const targetUsername = userRow.username?.toLowerCase().trim();
+
+      // 2. Cascade delete all associated records
+      // a) Call audio chunks & sessions
+      await query(`DELETE FROM call_audio_chunks WHERE sender_id::text = $1`, [targetId]).catch(() => {});
+      await query(`DELETE FROM call_sessions WHERE caller_id::text = $1 OR callee_id::text = $1`, [targetId]).catch(() => {});
+      await query(`DELETE FROM calls WHERE caller_id::text = $1 OR callee_id::text = $1`, [targetId]).catch(() => {});
+
+      // b) Push tokens
+      await query(`DELETE FROM push_tokens WHERE user_id::text = $1 OR LOWER(user_email) = $2`, [targetId, targetEmail]).catch(() => {});
+
+      // c) Notifications
+      await query(`DELETE FROM notifications WHERE user_id::text = $1 OR LOWER(user_email) = $2`, [targetId, targetEmail]).catch(() => {});
+
+      // d) OTPs
+      await query(`DELETE FROM otps WHERE LOWER(email) = $1`, [targetEmail]).catch(() => {});
+
+      // e) Contacts
+      await query(`DELETE FROM contacts WHERE user_id::text = $1 OR contact_user_id::text = $1 OR LOWER(email) = $2`, [targetId, targetEmail]).catch(() => {});
+
+      // f) Messages sent by user
+      if (targetUsername) {
+        await query(`DELETE FROM messages WHERE sender_id::text = $1 OR LOWER(sender_username) = $2`, [targetId, targetUsername]).catch(() => {});
+      } else {
+        await query(`DELETE FROM messages WHERE sender_id::text = $1`, [targetId]).catch(() => {});
+      }
+
+      // g) Groups created by user
+      await query(`DELETE FROM groups WHERE created_by::text = $1 OR LOWER(created_by_email) = $2`, [targetId, targetEmail]).catch(() => {});
+
+      // h) Direct conversations where user is participant
+      await query(`DELETE FROM conversations WHERE participants::text ILIKE $1`, [`%${targetId}%`]).catch(() => {});
+
+      // i) Finally delete the user record
+      const deleteResult = await query(`DELETE FROM users WHERE id = $1 RETURNING id, email, name`, [targetId]);
+
+      res.status(200).json({
+        success: true,
+        message: "Account and all associated data have been permanently deleted.",
+        deletedUser: deleteResult.rows[0] || { id: targetId, email: targetEmail },
+      });
+    } catch (error: any) {
+      console.error("UserController.deleteAccount error:", error);
+      res.status(500).json({ error: "Failed to delete account. Please try again or contact support." });
+    }
+  },
 };
 
 export default userController;

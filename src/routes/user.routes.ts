@@ -30,4 +30,9 @@ router.post("/change-password", userController.changePassword);
 // 7. Submit feedback & support
 router.post("/feedback", userController.submitFeedback);
 
+// 8. Delete user account permanently
+router.delete("/account", userController.deleteAccount);
+router.delete("/profile", userController.deleteAccount);
+router.post("/delete-account", userController.deleteAccount);
+
 export default router;
