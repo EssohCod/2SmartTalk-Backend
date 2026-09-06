@@ -265,6 +265,13 @@ export const contactController = {
       const user = (req as any).user;
       const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string);
 
+      // Find contact details before deletion so we can remove their chat thread too
+      const contactRows = await pool.query(
+        "SELECT id, name, email, contact_user_id, user_id FROM contacts WHERE id = $1 LIMIT 1",
+        [id]
+      );
+      const contact = contactRows.rows[0];
+
       let query = "DELETE FROM contacts WHERE id = $1";
       const params: any[] = [id];
 
@@ -280,6 +287,40 @@ export const contactController = {
       if (deleteResult.rowCount === 0) {
         res.status(404).json({ error: "Contact not found." });
         return;
+      }
+
+      // Also clean up any direct conversation and messages with this removed contact from chats
+      if (contact) {
+        try {
+          const contactName = contact.name;
+          const contactUserId = contact.contact_user_id;
+
+          const matchingConvs = await pool.query(
+            `SELECT id FROM conversations
+             WHERE type = 'direct'
+               AND (
+                 id = $1
+                 OR (LOWER(title) = LOWER($2) AND $2 != '')
+                 OR ($3::text != '' AND participants::text ILIKE $4)
+                 OR ($1::text != '' AND participants::text ILIKE $5)
+               )`,
+            [
+              id,
+              contactName || "",
+              contactUserId || "",
+              contactUserId ? `%"${contactUserId}"%` : "",
+              `%"${id}"%`,
+            ]
+          );
+
+          if (matchingConvs.rows.length > 0) {
+            const convIds = matchingConvs.rows.map((r) => r.id);
+            await pool.query("DELETE FROM messages WHERE conversation_id = ANY($1::uuid[])", [convIds]);
+            await pool.query("DELETE FROM conversations WHERE id = ANY($1::uuid[])", [convIds]);
+          }
+        } catch (convErr) {
+          console.warn("Clean up conversation for removed contact warning:", convErr);
+        }
       }
 
       res.status(200).json({
