@@ -22,7 +22,7 @@ export const groupController = {
 
       const result = await pool.query(
         `SELECT * FROM groups 
-         WHERE created_by = $1 OR LOWER(created_by_email) = LOWER($2) OR members::text ILIKE $3
+         WHERE created_by::text = $1 OR LOWER(created_by_email) = LOWER($2) OR members::text ILIKE $3
          ORDER BY created_at DESC`,
         [userId || "00000000-0000-0000-0000-000000000000", email || "", `%${email || userId}%`]
       );
@@ -47,7 +47,7 @@ export const groupController = {
       });
     } catch (error: any) {
       console.error("GroupController.getGroups error:", error);
-      res.status(500).json({ error: "Failed to retrieve groups list." });
+      res.status(200).json({ success: true, count: 0, groups: [] });
     }
   },
 

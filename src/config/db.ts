@@ -17,27 +17,45 @@ pool.on("error", (err) => {
   console.warn("Recoverable PostgreSQL client idle event:", err.message);
 });
 
+// Wrap pool.query with automatic retry on recoverable network / timeout / termination errors
+const rawPoolQuery = pool.query.bind(pool);
+(pool as any).query = async function (
+  textOrConfig: any,
+  paramsOrCallback?: any,
+  callback?: any
+): Promise<any> {
+  if (typeof paramsOrCallback === "function" || typeof callback === "function") {
+    return rawPoolQuery(textOrConfig, paramsOrCallback, callback);
+  }
+  const start = Date.now();
+  try {
+    const res = await rawPoolQuery(textOrConfig, paramsOrCallback);
+    const duration = Date.now() - start;
+    if (!env.isProduction) {
+      const queryText = typeof textOrConfig === "string" ? textOrConfig : textOrConfig?.text;
+      console.log("Executed query", { text: queryText, duration: `${duration}ms`, rows: res?.rowCount });
+    }
+    return res;
+  } catch (err: any) {
+    if (
+      err?.message?.includes("Connection terminated") ||
+      err?.message?.includes("timeout") ||
+      err?.message?.includes("ECONNRESET") ||
+      err?.code === "57P01"
+    ) {
+      console.warn("PostgreSQL pool connection retrying query once after:", err.message);
+      const retryRes = await rawPoolQuery(textOrConfig, paramsOrCallback);
+      return retryRes;
+    }
+    throw err;
+  }
+};
+
 export const query = async <T extends QueryResultRow = any>(
   text: string,
   params?: any[]
 ): Promise<QueryResult<T>> => {
-  const start = Date.now();
-  try {
-    const res = await pool.query<T>(text, params);
-    const duration = Date.now() - start;
-    if (!env.isProduction) {
-      console.log("Executed query", { text, duration: `${duration}ms`, rows: res.rowCount });
-    }
-    return res;
-  } catch (err: any) {
-    // Retry once if connection was terminated unexpectedly or timed out
-    if (err?.message?.includes("Connection terminated") || err?.message?.includes("timeout")) {
-      console.warn("PostgreSQL connection retrying once after:", err.message);
-      const res = await pool.query<T>(text, params);
-      return res;
-    }
-    throw err;
-  }
+  return pool.query<T>(text, params);
 };
 
 export const checkDatabaseConnection = async (): Promise<boolean> => {
