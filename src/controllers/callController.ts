@@ -39,6 +39,8 @@ export const callController = {
         callType = "audio", // 'audio' | 'video'
         isGroup = false,
         groupName = null,
+        participantsCount,
+        participants = [],
       } = req.body;
 
       if (!calleeName || !calleeName.trim()) {
@@ -48,17 +50,18 @@ export const callController = {
 
       const cleanCallee = calleeName.trim();
       const roomId = `room_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const numParticipants = Number(participantsCount) || (isGroup ? Math.max(3, (participants?.length || 0) + 1) : 2);
 
       // 1. Create active call session
       const sessionResult = await pool.query(
         `INSERT INTO call_sessions (
           caller_name, caller_username, caller_avatar, caller_language, caller_language_flag, caller_location,
           callee_name, callee_username, callee_avatar, callee_language, callee_language_flag, callee_location,
-          call_type, status, room_id, started_at
+          call_type, status, room_id, is_group, group_name, participants_count, active_participants, started_at
         ) VALUES (
           $1, $2, $3, $4, $5, $6,
           $7, $8, $9, $10, $11, $12,
-          $13, 'ringing', $14, NOW()
+          $13, 'ringing', $14, $15, $16, $17, $18, NOW()
         ) RETURNING *`,
         [
           callerName,
@@ -75,6 +78,10 @@ export const callController = {
           calleeLocation,
           callType,
           roomId,
+          Boolean(isGroup),
+          groupName || null,
+          numParticipants,
+          JSON.stringify(participants || []),
         ]
       );
 
@@ -390,7 +397,7 @@ export const callController = {
   async endCall(req: Request, res: Response): Promise<void> {
     try {
       const sessionId = req.params.sessionId as string;
-      const { durationSeconds = 0 } = req.body;
+      const { durationSeconds = 0, remainingCount } = req.body;
 
       if (!sessionId || !isUuid(sessionId)) {
         res.status(200).json({
@@ -401,11 +408,55 @@ export const callController = {
         return;
       }
 
+      // Check current session
+      const sessionQuery = await pool.query(
+        "SELECT * FROM call_sessions WHERE id = $1",
+        [sessionId]
+      );
+
+      if (sessionQuery.rows.length === 0) {
+        res.status(200).json({
+          success: true,
+          message: "Call ended successfully.",
+          status: "ended",
+        });
+        return;
+      }
+
+      const session = sessionQuery.rows[0];
+      const isGroupCall = session.is_group === true || (session.participants_count && Number(session.participants_count) > 2);
+
+      // Requirement 1: If there are more than two people on the call,
+      // until the last person drops the call, the call should still continue/count!
+      if (isGroupCall && remainingCount !== undefined) {
+        const remaining = Number(remainingCount);
+        if (remaining > 1) {
+          // One person dropped out of group call; group call stays active for remaining participants
+          await pool.query(
+            `UPDATE call_sessions
+             SET participants_count = $2
+             WHERE id = $1`,
+            [sessionId, remaining]
+          );
+
+          res.status(200).json({
+            success: true,
+            status: "connected",
+            callContinues: true,
+            remainingParticipants: remaining,
+            message: "Participant left group call. Call remains active for remaining participants.",
+          });
+          return;
+        }
+      }
+
+      // Requirement 1: For two people on a call (or the last person dropping group call),
+      // the entire call terminates completely for all participants!
       const formatted = formatDuration(Number(durationSeconds) || 0);
 
       const updateResult = await pool.query(
         `UPDATE call_sessions
-         SET status = 'ended', ended_at = NOW(), duration_seconds = $2
+         SET status = 'ended', ended_at = NOW(), duration_seconds = $2, participants_count = 0
          WHERE id = $1
          RETURNING *`,
         [sessionId, Number(durationSeconds) || 0]
@@ -423,9 +474,14 @@ export const callController = {
         );
       }
 
+      // Ephemeral isolation: Prune in-call messages & audio chunks as soon as the call ends
+      pool.query("DELETE FROM call_messages WHERE session_id = $1", [sessionId]).catch(() => {});
+      pool.query("DELETE FROM call_audio_chunks WHERE session_id = $1", [sessionId]).catch(() => {});
+
       res.status(200).json({
         success: true,
-        message: "Call ended successfully.",
+        message: "Call ended completely.",
+        status: "ended",
         duration: formatted,
       });
     } catch (error: any) {
@@ -451,7 +507,7 @@ export const callController = {
       }
 
       const result = await pool.query(
-        "SELECT id, status, room_id, started_at, connected_at, ended_at, duration_seconds FROM call_sessions WHERE id = $1",
+        "SELECT id, status, room_id, is_group, participants_count, started_at, connected_at, ended_at, duration_seconds FROM call_sessions WHERE id = $1",
         [sessionId]
       );
 
@@ -481,6 +537,8 @@ export const callController = {
           id: row.id,
           status: row.status,
           roomId: row.room_id,
+          isGroup: row.is_group,
+          participantsCount: row.participants_count,
           startedAt: row.started_at,
           connectedAt: row.connected_at,
           endedAt: row.ended_at,
@@ -639,6 +697,138 @@ export const callController = {
     } catch (error: any) {
       console.warn("CallController.getCallAudio error:", error?.message || error);
       res.status(200).json({ success: false, chunks: [] });
+    }
+  },
+
+  /**
+   * 7d. Send Ephemeral In-Call Chat Message (Active during call only)
+   * POST /api/calls/:sessionId/chat
+   */
+  async sendInCallMessage(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const {
+        senderName = "You",
+        senderUserId = null,
+        text,
+        sourceLanguage = "en",
+        targetLanguage = "en",
+      } = req.body;
+
+      if (!sessionId || !text || !text.trim()) {
+        res.status(400).json({ error: "sessionId and message text are required." });
+        return;
+      }
+
+      const cleanText = text.trim();
+      let translatedText = cleanText;
+
+      // Auto-translate if languages differ
+      if (
+        sourceLanguage &&
+        targetLanguage &&
+        normalizeLanguageCode(sourceLanguage) !== normalizeLanguageCode(targetLanguage)
+      ) {
+        try {
+          const transResult = await translationService.translateText(
+            cleanText,
+            targetLanguage,
+            sourceLanguage
+          );
+          if (transResult?.translatedText) {
+            translatedText = transResult.translatedText;
+          }
+        } catch (transErr) {
+          console.warn("In-call message auto-translation error:", transErr);
+        }
+      }
+
+      let nextSeq = 1;
+      if (isUuid(sessionId)) {
+        const seqResult = await pool.query(
+          "SELECT COALESCE(MAX(sequence_id), 0) + 1 AS next_seq FROM call_messages WHERE session_id = $1",
+          [sessionId]
+        );
+        nextSeq = Number(seqResult.rows[0]?.next_seq) || 1;
+
+        const insertRes = await pool.query(
+          `INSERT INTO call_messages (session_id, sender_name, sender_user_id, original_text, translated_text, target_language, sequence_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+           RETURNING *`,
+          [sessionId, senderName, senderUserId, cleanText, translatedText, targetLanguage, nextSeq]
+        );
+
+        const row = insertRes.rows[0];
+        res.status(201).json({
+          success: true,
+          message: {
+            id: row.id,
+            sessionId: row.session_id,
+            sender: senderName,
+            original: row.original_text,
+            translated: row.translated_text,
+            sequenceId: row.sequence_id,
+            createdAt: row.created_at,
+          },
+        });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: {
+          id: Date.now().toString(),
+          sessionId,
+          sender: senderName,
+          original: cleanText,
+          translated: translatedText,
+          sequenceId: 1,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (error: any) {
+      console.error("CallController.sendInCallMessage error:", error);
+      res.status(500).json({ error: "Failed to send in-call message." });
+    }
+  },
+
+  /**
+   * 7e. Get Ephemeral In-Call Chat Messages (Active during call only)
+   * GET /api/calls/:sessionId/chat
+   */
+  async getInCallMessages(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const afterSeq = Number(req.query.afterSeq) || 0;
+
+      if (!sessionId || !isUuid(sessionId)) {
+        res.status(200).json({ success: true, messages: [] });
+        return;
+      }
+
+      const result = await pool.query(
+        `SELECT id, session_id, sender_name, sender_user_id, original_text, translated_text, sequence_id, created_at
+         FROM call_messages
+         WHERE session_id = $1 AND sequence_id > $2
+         ORDER BY sequence_id ASC LIMIT 50`,
+        [sessionId, afterSeq]
+      );
+
+      res.status(200).json({
+        success: true,
+        messages: result.rows.map((r) => ({
+          id: r.id,
+          sessionId: r.session_id,
+          sender: r.sender_name,
+          original: r.original_text,
+          translated: r.translated_text,
+          sequenceId: r.sequence_id,
+          createdAt: r.created_at,
+        })),
+      });
+    } catch (error: any) {
+      console.warn("CallController.getInCallMessages error:", error);
+      res.status(200).json({ success: false, messages: [] });
     }
   },
 

@@ -278,8 +278,28 @@ export async function initDb(): Promise<void> {
         ended_at TIMESTAMP WITH TIME ZONE,
         duration_seconds INTEGER DEFAULT 0,
         quick_reply TEXT,
+        is_group BOOLEAN DEFAULT false,
+        group_name VARCHAR(255),
+        participants_count INTEGER DEFAULT 2,
+        active_participants JSONB DEFAULT '[]'::jsonb,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+    `);
+
+    // 9b. Ephemeral In-Call Chat Messages (Visible strictly during active call session)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS call_messages (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        session_id UUID NOT NULL,
+        sender_name VARCHAR(255) NOT NULL,
+        sender_user_id VARCHAR(255),
+        original_text TEXT NOT NULL,
+        translated_text TEXT,
+        target_language VARCHAR(100),
+        sequence_id INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_call_messages_session ON call_messages(session_id, sequence_id);
     `);
 
     // 10. Call Audio Chunks Table (In-Call Two-Way Real-Time Voice Audio Exchange)
