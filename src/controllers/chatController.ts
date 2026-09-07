@@ -457,31 +457,37 @@ export const chatController = {
             (row.original_text && row.original_text.startsWith("Voice Note")) ||
             (row.translated_text && row.translated_text.startsWith("Voice Note"));
 
-          // Sender hears sender's voice/language, recipient hears translated voice/language
-          let resolvedAudioUrl = isViewerSender
-            ? (row.media_url || row.audio_url)
-            : (row.audio_url || row.media_url);
+          // Sender hears original recording; recipient hears translated speech in their preferred language
+          let resolvedAudioUrl: string | null = null;
+          if (isViewerSender) {
+            resolvedAudioUrl = (row.media_url && !row.media_url.startsWith("file://"))
+              ? row.media_url
+              : (row.audio_url && !row.audio_url.startsWith("file://") ? row.audio_url : row.media_url);
+          } else {
+            // RECIPIENT: Must receive playable translated audio (NEVER sender's local file:// URI)
+            if (row.audio_url && !row.audio_url.startsWith("file://")) {
+              resolvedAudioUrl = row.audio_url;
+            } else if (row.media_url && !row.media_url.startsWith("file://")) {
+              resolvedAudioUrl = row.media_url;
+            }
+          }
 
-          if (isAudioType && (!resolvedAudioUrl || !resolvedAudioUrl.trim())) {
-            // Asynchronously generate audio in background without blocking message response
-            setImmediate(async () => {
-              try {
-                const textToSpeak = isViewerSender
-                  ? (row.original_text && !row.original_text.startsWith("Voice Note")
-                      ? row.original_text
-                      : `Voice note from ${row.sender_name || "sender"}.`)
-                  : (translatedText && !translatedText.startsWith("Voice Note")
-                      ? translatedText
-                      : (row.original_text || "Voice note."));
-                const speakLang = isViewerSender ? (row.sender_language || "en") : (targetLang || userLanguage || "en");
-                const tts = await dubbingService.synthesizeSpeech(textToSpeak, speakLang);
-                if (tts?.audioDataUri) {
-                  pool.query("UPDATE messages SET audio_url = $1 WHERE id = $2", [tts.audioDataUri, row.id]).catch(() => {});
-                }
-              } catch (err) {
-                // Background TTS fallback
+          // If voice note has no playable URL for recipient, or was an invalid file:// URI, synthesize translated audio immediately
+          if (isAudioType && (!resolvedAudioUrl || resolvedAudioUrl.startsWith("file://") || (row.audio_url && row.audio_url.startsWith("file://")))) {
+            try {
+              const textToSpeak = !isViewerSender
+                ? (translatedText && !translatedText.startsWith("Voice Note") ? translatedText : (row.original_text || "Voice note."))
+                : (row.original_text && !row.original_text.startsWith("Voice Note") ? row.original_text : "Voice note.");
+              const speakLang = !isViewerSender ? (targetLang || userLanguage || "es") : (row.sender_language || "en");
+              const tts = await dubbingService.synthesizeSpeech(textToSpeak, speakLang);
+              if (tts?.audioDataUri) {
+                resolvedAudioUrl = tts.audioDataUri;
+                // Heal DB row so future fetches are instant
+                pool.query("UPDATE messages SET audio_url = $1 WHERE id = $2", [tts.audioDataUri, row.id]).catch(() => {});
               }
-            });
+            } catch (err) {
+              console.warn("getMessages on-demand TTS synthesis warning:", err);
+            }
           }
 
           return {
@@ -499,8 +505,10 @@ export const chatController = {
             targetLanguageFlag: targetFlag,
             messageType: isAudioType ? "audio" : (row.message_type || "text"),
             audioUrl: resolvedAudioUrl,
-            audioDuration: row.audio_duration || "0:02",
-            mediaUrl: row.media_url,
+            translatedAudioUrl: !isViewerSender ? resolvedAudioUrl : (row.audio_url && !row.audio_url.startsWith("file://") ? row.audio_url : resolvedAudioUrl),
+            originalAudioUrl: (row.media_url && !row.media_url.startsWith("file://")) ? row.media_url : null,
+            audioDuration: row.audio_duration || "0:12",
+            mediaUrl: isViewerSender ? row.media_url : (row.media_url && !row.media_url.startsWith("file://") ? row.media_url : resolvedAudioUrl),
             timestamp: row.created_at,
             createdAt: row.created_at,
           };
@@ -636,8 +644,8 @@ export const chatController = {
       const cleanText = (text || "").trim();
       let resolvedOriginalText = cleanText;
       let translatedText = cleanText;
-      let finalAudioUrl = audioUrl;
-      let finalMediaUrl = mediaUrl || (messageType === "audio" && req.body.audioBase64 ? req.body.audioBase64 : null);
+      let finalAudioUrl = (audioUrl && !audioUrl.startsWith("file://")) ? audioUrl : null;
+      let finalMediaUrl = req.body.audioBase64 || (mediaUrl && !mediaUrl.startsWith("file://") ? mediaUrl : null);
 
       if (messageType === "audio") {
         // 🎙️ VOICE NOTE PIPELINE
@@ -679,7 +687,7 @@ export const chatController = {
         }
 
         // Guarantee playable audio for recipient via TTS in target language
-        if (!finalAudioUrl || !finalAudioUrl.trim()) {
+        if (!finalAudioUrl || !finalAudioUrl.trim() || finalAudioUrl.startsWith("file://")) {
           try {
             const speakText = translatedText && !translatedText.startsWith("Voice Note")
               ? translatedText
@@ -880,6 +888,8 @@ export const chatController = {
           targetLanguageFlag: msgRow.target_language_flag,
           messageType: msgRow.message_type,
           audioUrl: msgRow.media_url || msgRow.audio_url,
+          translatedAudioUrl: msgRow.audio_url,
+          originalAudioUrl: msgRow.media_url,
           audioDuration: msgRow.audio_duration,
           mediaUrl: msgRow.media_url,
           timestamp: msgRow.created_at,

@@ -681,21 +681,36 @@ export async function translateSpeechWithGemini(
 Respond strictly in this exact format without any other words:
 Transcript: <transcription> | Translation: <translation>`;
 
-    const res = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { inlineData: { mimeType, data: base64Audio } },
-            { text: prompt }
-          ]
-        }]
-      })
-    });
+    let res: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await fetch(geminiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { inlineData: { mimeType, data: base64Audio } },
+                { text: prompt }
+              ]
+            }]
+          })
+        });
 
-    if (!res.ok) {
-      console.warn("Gemini S2S HTTP error:", res.status);
+        if (res.ok) break;
+        console.warn(`Gemini S2S HTTP error (attempt ${attempt + 1}):`, res.status);
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        }
+      } catch (fetchErr) {
+        console.warn(`Gemini S2S fetch error (attempt ${attempt + 1}):`, fetchErr);
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        }
+      }
+    }
+
+    if (!res || !res.ok) {
       return null;
     }
 
