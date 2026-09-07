@@ -634,18 +634,83 @@ export const callController = {
   async sendCallAudio(req: Request, res: Response): Promise<void> {
     try {
       const sessionId = req.params.sessionId as string;
-      const { senderName, senderUserId, audioBase64, sequenceId = 1 } = req.body;
+      const {
+        senderName = "Caller",
+        senderUserId,
+        audioBase64,
+        sequenceId = 1,
+        sourceLanguage,
+        targetLanguage,
+        isDubbingActive = true,
+      } = req.body;
 
       if (!sessionId || !audioBase64) {
         res.status(400).json({ error: "Session ID and audioBase64 are required." });
         return;
       }
 
+      let playAudioBase64 = audioBase64;
+      let originalText: string | null = null;
+      let translatedText: string | null = null;
+
       if (isUuid(sessionId)) {
+        // Resolve source and target language if not explicitly provided
+        let resolvedSourceLang = sourceLanguage;
+        let resolvedTargetLang = targetLanguage;
+
+        if (!resolvedSourceLang || !resolvedTargetLang) {
+          try {
+            const sessRes = await pool.query(
+              "SELECT caller_name, caller_language, callee_name, callee_language FROM call_sessions WHERE id = $1",
+              [sessionId]
+            );
+            if (sessRes.rows.length > 0) {
+              const sess = sessRes.rows[0];
+              const isCaller = !sess.caller_name || sess.caller_name.toLowerCase() === senderName.toLowerCase();
+              resolvedSourceLang = resolvedSourceLang || (isCaller ? sess.caller_language : sess.callee_language) || "English";
+              resolvedTargetLang = resolvedTargetLang || (isCaller ? sess.callee_language : sess.caller_language) || "Spanish";
+            }
+          } catch {}
+        }
+
+        resolvedSourceLang = resolvedSourceLang || "English";
+        resolvedTargetLang = resolvedTargetLang || "Spanish";
+
+        // If dubbing is active and languages differ, perform real-time Speech-to-Speech translation
+        if (isDubbingActive && normalizeLanguageCode(resolvedSourceLang) !== normalizeLanguageCode(resolvedTargetLang)) {
+          try {
+            const cleanB64 = audioBase64.replace(/^data:[^;]+;base64,/, "");
+            const audioBuffer = Buffer.from(cleanB64, "base64");
+            if (audioBuffer.length > 100) {
+              const s2s = await translationService.translateSpeech(
+                audioBuffer,
+                resolvedSourceLang,
+                resolvedTargetLang
+              );
+              if (s2s && s2s.audio_url) {
+                playAudioBase64 = s2s.audio_url;
+                originalText = s2s.transcription || null;
+                translatedText = s2s.translation || null;
+              }
+            }
+          } catch (dubErr) {
+            console.warn("Speech dubbing synthesis error, keeping original audio:", dubErr);
+          }
+        }
+
         await pool.query(
-          `INSERT INTO call_audio_chunks (session_id, sender_name, sender_user_id, audio_base64, sequence_id, created_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())`,
-          [sessionId, senderName || "Caller", senderUserId || null, audioBase64, Number(sequenceId) || 1]
+          `INSERT INTO call_audio_chunks (session_id, sender_name, sender_user_id, audio_base64, sequence_id, original_text, translated_text, target_language, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+          [
+            sessionId,
+            senderName,
+            senderUserId || null,
+            playAudioBase64,
+            Number(sequenceId) || 1,
+            originalText,
+            translatedText,
+            resolvedTargetLang,
+          ]
         );
 
         // Prune older audio chunks (> 60 seconds) so DB stays tiny and fast
@@ -655,7 +720,13 @@ export const callController = {
         ).catch(() => {});
       }
 
-      res.status(200).json({ success: true, sequenceId });
+      res.status(200).json({
+        success: true,
+        sequenceId,
+        originalText,
+        translatedText,
+        audioBase64: playAudioBase64,
+      });
     } catch (error: any) {
       console.warn("CallController.sendCallAudio error:", error?.message || error);
       res.status(200).json({ success: false, error: error?.message });
@@ -678,7 +749,7 @@ export const callController = {
       }
 
       let queryText = `
-        SELECT id, sender_name, sender_user_id, audio_base64, sequence_id, created_at
+        SELECT id, sender_name, sender_user_id, audio_base64, sequence_id, original_text, translated_text, target_language, created_at
         FROM call_audio_chunks
         WHERE session_id = $1
           AND sequence_id > $2
@@ -702,6 +773,9 @@ export const callController = {
           senderUserId: r.sender_user_id,
           audioBase64: r.audio_base64,
           sequenceId: r.sequence_id,
+          originalText: r.original_text,
+          translatedText: r.translated_text,
+          targetLanguage: r.target_language,
           createdAt: r.created_at,
         })),
       });

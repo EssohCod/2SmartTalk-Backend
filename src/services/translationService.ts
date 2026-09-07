@@ -640,6 +640,14 @@ export async function translateSpeechWithGenesia(
     }
   }
 
+  // 2. High-speed Gemini 3.6 Flash Native Audio S2S (Ultra-accurate & real-time)
+  try {
+    const geminiRes = await translateSpeechWithGemini(audioBuffer, sourceLang, targetLang);
+    if (geminiRes && (geminiRes.translation || geminiRes.transcription)) return geminiRes;
+  } catch (gemErr) {
+    console.warn("[Speech S2S] Gemini error:", gemErr);
+  }
+
   // 🛡️ Fallback Engine: OpenAI Whisper Transcription + Translation + TTS
   // Guarantees voice notes always succeed even if local Genesia python server is offline
   try {
@@ -650,6 +658,97 @@ export async function translateSpeechWithGenesia(
   }
 
   return null;
+}
+
+export async function translateSpeechWithGemini(
+  audioBuffer: Buffer,
+  sourceLang: string = "en",
+  targetLang: string = "es",
+  mimeType: string = "audio/mp4"
+): Promise<{ audio_url: string; transcription: string; translation: string } | null> {
+  const apiKey = env.translation.geminiApiKey;
+  if (!apiKey) return null;
+
+  try {
+    const base64Audio = audioBuffer.toString("base64");
+    if (!base64Audio || base64Audio.length < 50) return null;
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${apiKey}`;
+
+    const prompt = `Listen carefully to this audio speech spoken in ${sourceLang}.
+1. Transcribe the exact words spoken in ${sourceLang}.
+2. Translate the transcript accurately and naturally into ${targetLang}.
+Respond strictly in this exact format without any other words:
+Transcript: <transcription> | Translation: <translation>`;
+
+    const res = await fetch(geminiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { inlineData: { mimeType, data: base64Audio } },
+            { text: prompt }
+          ]
+        }]
+      })
+    });
+
+    if (!res.ok) {
+      console.warn("Gemini S2S HTTP error:", res.status);
+      return null;
+    }
+
+    const data: any = await res.json();
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+
+    let transcript = "";
+    let translation = "";
+
+    const match = rawText.match(/Transcript:\s*(.*?)\s*\|\s*Translation:\s*(.*)/is);
+    if (match) {
+      transcript = match[1]?.trim() || "";
+      translation = match[2]?.trim() || "";
+    } else {
+      transcript = rawText;
+      const tr = await translationService.translateText(rawText, targetLang, sourceLang);
+      translation = tr.translatedText;
+    }
+
+    if (!translation && transcript) {
+      const tr = await translationService.translateText(transcript, targetLang, sourceLang);
+      translation = tr.translatedText;
+    }
+
+    // Synthesize target language voice audio (TTS)
+    let audioUrl = "";
+    if (translation) {
+      const langCode = normalizeLanguageCode(targetLang);
+      const encodedText = encodeURIComponent(translation.slice(0, 500));
+      const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodedText}&tl=${langCode}&client=tw-ob`;
+      const ttsRes = await fetch(ttsUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "audio/mpeg, audio/*",
+        },
+      });
+
+      if (ttsRes.ok) {
+        const ab = await ttsRes.arrayBuffer();
+        const b64 = Buffer.from(ab).toString("base64");
+        audioUrl = `data:audio/mp3;base64,${b64}`;
+      }
+    }
+
+    return {
+      audio_url: audioUrl,
+      transcription: transcript,
+      translation,
+    };
+  } catch (err) {
+    console.warn("translateSpeechWithGemini error:", err);
+    return null;
+  }
 }
 
 async function translateSpeechWithOpenAIFallback(

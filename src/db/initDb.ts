@@ -347,6 +347,9 @@ export async function initDb(): Promise<void> {
         sequence_id INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+      ALTER TABLE call_audio_chunks ADD COLUMN IF NOT EXISTS original_text TEXT;
+      ALTER TABLE call_audio_chunks ADD COLUMN IF NOT EXISTS translated_text TEXT;
+      ALTER TABLE call_audio_chunks ADD COLUMN IF NOT EXISTS target_language VARCHAR(50);
       CREATE INDEX IF NOT EXISTS idx_call_audio_chunks_session ON call_audio_chunks(session_id, sequence_id ASC);
       CREATE INDEX IF NOT EXISTS idx_call_audio_chunks_created ON call_audio_chunks(created_at);
     `);
