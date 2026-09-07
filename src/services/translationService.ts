@@ -623,7 +623,7 @@ export async function translateSpeechWithGenesia(
       formData.append("preserve_voice", String(preserveVoice));
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      const timeoutId = setTimeout(() => controller.abort(), 300000);
 
       const response = await fetch(endpoint, {
         method: "POST",
