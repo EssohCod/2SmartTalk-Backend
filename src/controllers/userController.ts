@@ -502,7 +502,7 @@ export const userController = {
       }
 
       const result = await query(
-        `UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE id = $2 OR LOWER(email) = LOWER($3) RETURNING avatar_url`,
+        `UPDATE users SET avatar_url = $1, updated_at = NOW() WHERE id = $2 OR LOWER(email) = LOWER($3) RETURNING id, avatar_url`,
         [avatarUrl, userId || "00000000-0000-0000-0000-000000000000", email || ""]
       );
 
@@ -511,10 +511,31 @@ export const userController = {
         return;
       }
 
+      const updatedUser = result.rows[0];
+      const actualUserId = updatedUser.id;
+
+      // 🛡️ Propagate avatar to contacts table so all partners see the updated photo immediately
+      if (actualUserId) {
+        query(
+          `UPDATE contacts SET avatar_url = $1 WHERE contact_user_id = $2 OR (email IS NOT NULL AND email != '' AND LOWER(email) = LOWER($3))`,
+          [avatarUrl, actualUserId, email || ""]
+        ).catch((e) => console.warn("Failed to propagate avatar to contacts:", e));
+
+        query(
+          `UPDATE messages SET sender_avatar = $1 WHERE sender_id = $2`,
+          [avatarUrl, actualUserId]
+        ).catch((e) => console.warn("Failed to propagate avatar to messages:", e));
+
+        query(
+          `UPDATE conversations SET avatar_url = $1 WHERE type = 'direct' AND participants::text ILIKE $2`,
+          [avatarUrl, `%"${actualUserId}"%`]
+        ).catch((e) => console.warn("Failed to propagate avatar to conversations:", e));
+      }
+
       res.status(200).json({
         success: true,
         message: "Avatar updated successfully! 🎉",
-        avatarUrl: result.rows[0].avatar_url,
+        avatarUrl: updatedUser.avatar_url,
       });
     } catch (error: any) {
       console.error("UpdateAvatar error:", error);

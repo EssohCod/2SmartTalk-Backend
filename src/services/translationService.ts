@@ -618,7 +618,7 @@ export async function translateSpeechWithGenesia(
       formData.append("preserve_voice", String(preserveVoice));
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
 
       const response = await fetch(endpoint, {
         method: "POST",
@@ -629,13 +629,28 @@ export async function translateSpeechWithGenesia(
 
       if (response.ok) {
         const data: any = await response.json();
+        let finalAudioUrl = data.audio_url || "";
+        // Convert audio to portable base64 data URI so mobile devices have zero network/localhost routing hurdles
+        if (finalAudioUrl && finalAudioUrl.startsWith("http")) {
+          try {
+            const audioFetch = await fetch(finalAudioUrl);
+            if (audioFetch.ok) {
+              const ab = await audioFetch.arrayBuffer();
+              const b64 = Buffer.from(ab).toString("base64");
+              finalAudioUrl = `data:audio/wav;base64,${b64}`;
+            }
+          } catch (fetchErr) {
+            console.warn("[Genesia S2S] Failed to convert audio to base64:", fetchErr);
+          }
+        }
         return {
-          audio_url: data.audio_url || "",
+          audio_url: finalAudioUrl,
           transcription: data.transcription || "",
           translation: data.translation || "",
         };
       }
     } catch (err) {
+      console.warn("[Genesia S2S] Request warning:", err);
       // Continue to next endpoint or fallback
     }
   }

@@ -128,14 +128,14 @@ export const chatController = {
             const cRes = await pool.query(
               `SELECT c.*, u.name as u_name, u.avatar_url as u_avatar, u.native_language as u_lang, u.native_language_flag as u_flag
                FROM contacts c
-               LEFT JOIN users u ON u.id = c.user_id
-               WHERE c.contact_user_id::text = $1
+               LEFT JOIN users u ON u.id = c.contact_user_id
+               WHERE c.user_id::text = $1
                LIMIT 1`,
               [userId]
             );
             if (cRes.rows.length > 0) {
               displayName = cRes.rows[0].u_name || cRes.rows[0].name;
-              displayAvatar = cRes.rows[0].u_avatar || displayAvatar;
+              displayAvatar = cRes.rows[0].u_avatar || cRes.rows[0].avatar_url || displayAvatar;
               recipientLang = cRes.rows[0].u_lang || recipientLang;
               recipientLangFlag = cRes.rows[0].u_flag || recipientLangFlag;
               partnerFound = true;
@@ -312,7 +312,11 @@ export const chatController = {
 
       let targetConvId = id;
       let result = await pool.query(
-        "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
+        `SELECT m.*, u.avatar_url AS user_avatar_url, u.name AS user_real_name
+         FROM messages m
+         LEFT JOIN users u ON m.sender_id = u.id
+         WHERE m.conversation_id = $1
+         ORDER BY m.created_at ASC`,
         [targetConvId]
       );
 
@@ -338,7 +342,11 @@ export const chatController = {
           if (linkedConv.rows.length > 0 && linkedConv.rows[0].id !== id) {
             targetConvId = linkedConv.rows[0].id;
             result = await pool.query(
-              "SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC",
+              `SELECT m.*, u.avatar_url AS user_avatar_url, u.name AS user_real_name
+               FROM messages m
+               LEFT JOIN users u ON m.sender_id = u.id
+               WHERE m.conversation_id = $1
+               ORDER BY m.created_at ASC`,
               [targetConvId]
             );
           }
@@ -494,9 +502,9 @@ export const chatController = {
             id: row.id,
             conversationId: row.conversation_id,
             senderId: row.sender_id,
-            senderName: row.sender_name,
+            senderName: row.user_real_name || row.sender_name,
             senderUsername: row.sender_username,
-            senderAvatar: row.sender_avatar,
+            senderAvatar: row.user_avatar_url || row.sender_avatar,
             senderLanguage: row.sender_language || "English",
             senderLanguageFlag: row.sender_language_flag || "🇺🇸",
             text: row.original_text,
