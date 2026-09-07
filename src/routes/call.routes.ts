@@ -19,6 +19,12 @@ router.get("/:sessionId/audio", callController.getCallAudio);
 router.post("/:sessionId/chat", callController.sendInCallMessage);
 router.get("/:sessionId/chat", callController.getInCallMessages);
 
+// 1b. Real-time Screen Sharing Endpoints
+router.post("/:sessionId/screen-share/start", callController.startScreenShare);
+router.post("/:sessionId/screen-share/stop", callController.stopScreenShare);
+router.get("/:sessionId/screen-share", callController.getScreenShare);
+router.post("/:sessionId/screen-share/frame", callController.updateScreenShareFrame);
+
 // 2. Call History Logs Endpoints
 router.get("/", callController.getCalls);
 router.post("/", callController.logCall);

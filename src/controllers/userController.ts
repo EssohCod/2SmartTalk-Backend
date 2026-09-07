@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { query } from "../config/db";
 import { AuthenticatedRequest } from "../middlewares/authMiddleware";
+import { resolveCountryAndTimezone } from "../utils/countryTimezoneMap";
 
 export interface UserSettingsSchema {
   notifications?: {
@@ -136,6 +137,26 @@ export const userController = {
         ...(userRow.subscription || {}),
       };
 
+      // Auto-resolve timezone and country from language or location if not explicitly stored
+      const resolvedGeo = resolveCountryAndTimezone({
+        country: userRow.country,
+        location: userRow.location,
+        language: userRow.native_language,
+        flag: userRow.native_language_flag,
+        code: userRow.native_language_code,
+      });
+      const userTimezone = userRow.timezone || resolvedGeo.timezone;
+      const userCountry = userRow.country || resolvedGeo.country;
+
+      // If timezone was missing in DB, backfill it in background
+      if (!userRow.timezone && userTimezone && userRow.id) {
+        query(`UPDATE users SET timezone = $1, country = COALESCE(country, $2) WHERE id = $3`, [
+          userTimezone,
+          userCountry,
+          userRow.id,
+        ]).catch(() => {});
+      }
+
       res.status(200).json({
         success: true,
         user: {
@@ -149,6 +170,8 @@ export const userController = {
           gender: userRow.gender || "Other",
           bio: userRow.bio || "Connecting across cultures with 2SmartTalk 🌐",
           location: userRow.location || null,
+          country: userCountry,
+          timezone: userTimezone,
           nativeLanguage: userRow.native_language || "English",
           nativeLanguageCode: userRow.native_language_code || "en-US",
           nativeLanguageFlag: userRow.native_language_flag || "🇺🇸",
@@ -194,6 +217,8 @@ export const userController = {
         gender,
         bio,
         location,
+        country,
+        timezone,
         avatarUrl,
         memberSince: newMemberSince,
       } = req.body;
@@ -217,6 +242,15 @@ export const userController = {
         }
       }
 
+      // Auto-resolve timezone if country or location changed and timezone not provided
+      let resolvedTimezone = timezone;
+      let resolvedCountry = country;
+      if (!resolvedTimezone && (location || country)) {
+        const geo = resolveCountryAndTimezone({ country, location });
+        resolvedTimezone = geo.timezone;
+        if (!resolvedCountry) resolvedCountry = geo.country;
+      }
+
       const updateQuery = `
         UPDATE users
         SET 
@@ -230,8 +264,10 @@ export const userController = {
           location = COALESCE($8, location),
           avatar_url = COALESCE($9, avatar_url),
           member_since = COALESCE($10, member_since),
+          timezone = COALESCE($11, timezone),
+          country = COALESCE($12, country),
           updated_at = NOW()
-        WHERE id = $11 OR LOWER(email) = LOWER($12)
+        WHERE id = $13 OR LOWER(email) = LOWER($14)
         RETURNING *;
       `;
 
@@ -246,6 +282,8 @@ export const userController = {
         location || null,
         avatarUrl || null,
         newMemberSince || null,
+        resolvedTimezone || null,
+        resolvedCountry || null,
         userId || "00000000-0000-0000-0000-000000000000",
         email || "",
       ]);
@@ -275,6 +313,8 @@ export const userController = {
           gender: updated.gender,
           bio: updated.bio,
           location: updated.location,
+          country: updated.country,
+          timezone: updated.timezone,
           avatarUrl: updated.avatar_url,
           nativeLanguage: updated.native_language,
           nativeLanguageFlag: updated.native_language_flag,
@@ -303,7 +343,24 @@ export const userController = {
         (req.headers["x-user-email"] as string) ||
         req.body.email;
 
-      const { nativeLanguage, nativeLanguageCode, nativeLanguageFlag, liveTranslationEnabled } = req.body;
+      const {
+        nativeLanguage,
+        nativeLanguageCode,
+        nativeLanguageFlag,
+        liveTranslationEnabled,
+        timezone,
+        country,
+      } = req.body;
+
+      // Automatically import country's timezone when language is selected or updated
+      const geo = resolveCountryAndTimezone({
+        country,
+        language: nativeLanguage,
+        flag: nativeLanguageFlag,
+        code: nativeLanguageCode,
+      });
+      const targetTimezone = timezone || geo.timezone;
+      const targetCountry = country || geo.country;
 
       const updateQuery = `
         UPDATE users
@@ -312,9 +369,11 @@ export const userController = {
           native_language_code = COALESCE($2, native_language_code),
           native_language_flag = COALESCE($3, native_language_flag),
           live_translation_enabled = COALESCE($4, live_translation_enabled),
+          timezone = COALESCE($5, timezone),
+          country = COALESCE($6, country),
           updated_at = NOW()
-        WHERE id = $5 OR LOWER(email) = LOWER($6)
-        RETURNING native_language, native_language_code, native_language_flag, live_translation_enabled;
+        WHERE id = $7 OR LOWER(email) = LOWER($8)
+        RETURNING native_language, native_language_code, native_language_flag, live_translation_enabled, timezone, country;
       `;
 
       const result = await query(updateQuery, [
@@ -322,6 +381,8 @@ export const userController = {
         nativeLanguageCode || null,
         nativeLanguageFlag || null,
         liveTranslationEnabled !== undefined ? liveTranslationEnabled : null,
+        targetTimezone || null,
+        targetCountry || null,
         userId || "00000000-0000-0000-0000-000000000000",
         email || "",
       ]);
@@ -335,13 +396,15 @@ export const userController = {
 
       res.status(200).json({
         success: true,
-        message: "Language preferences updated! 🌐",
+        message: "Language preferences and country timezone updated! 🌐",
         language: {
           nativeLanguage: updated.native_language,
           nativeLanguageCode: updated.native_language_code || "en-US",
           nativeLanguageFlag: updated.native_language_flag,
           liveTranslationEnabled: updated.live_translation_enabled,
         },
+        timezone: updated.timezone,
+        country: updated.country,
       });
     } catch (error: any) {
       console.error("UpdateLanguage error:", error);
@@ -698,6 +761,7 @@ export const userController = {
       res.status(500).json({ error: "Failed to delete account. Please try again or contact support." });
     }
   },
+
 };
 
 export default userController;

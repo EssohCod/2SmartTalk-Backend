@@ -34,6 +34,8 @@ export async function initDb(): Promise<void> {
         location VARCHAR(150) DEFAULT 'Global',
         live_translation_enabled BOOLEAN DEFAULT true,
         member_since VARCHAR(100) DEFAULT NULL,
+        timezone VARCHAR(100) DEFAULT NULL,
+        country VARCHAR(100) DEFAULT NULL,
         settings JSONB DEFAULT '{"notifications": {"enabled": true, "callVibrations": true, "subtitleAlerts": true, "messagePreview": true, "groupMentionsOnly": false, "doNotDisturb": false}, "callTranslation": {"autoVoiceDubbing": true, "preserveEmotion": true, "dualTextSubtitles": true, "noiseSuppression": true, "hdDubbingQuality": true, "speechSpeed": "1.0x", "subtitleFontSize": "Standard"}, "privacy": {"appLockEnabled": false, "zeroRetentionDubbing": true, "readReceipts": true, "onlinePresence": true, "cloudBackup": true}}'::jsonb,
         subscription JSONB DEFAULT '{"plan": "No active plan", "status": "inactive", "renewalDate": "", "amount": ""}'::jsonb,
         two_factor_enabled BOOLEAN DEFAULT false,
@@ -48,6 +50,8 @@ export async function initDb(): Promise<void> {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT 'Connecting across cultures with 2SmartTalk 🌐';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS location VARCHAR(150) DEFAULT 'Global';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) DEFAULT NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS native_language_code VARCHAR(20) DEFAULT NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS live_translation_enabled BOOLEAN DEFAULT true;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS member_since VARCHAR(100) DEFAULT NULL;
@@ -55,6 +59,10 @@ export async function initDb(): Promise<void> {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription JSONB DEFAULT '{"plan": "No active plan", "status": "inactive", "renewalDate": "", "amount": ""}'::jsonb;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT false;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS blocked_contacts_count INTEGER DEFAULT 0;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS presence_status VARCHAR(20) DEFAULT 'offline';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+      ALTER TABLE contacts ADD COLUMN IF NOT EXISTS presence_status VARCHAR(20) DEFAULT 'offline';
+      ALTER TABLE contacts ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
 
       -- Update any member_since that was set to static 'May 2024' or NULL to the user's actual join month and year
       UPDATE users 
@@ -109,10 +117,19 @@ export async function initDb(): Promise<void> {
         reminder_10min BOOLEAN DEFAULT true,
         speak_language VARCHAR(100) DEFAULT 'English',
         speak_language_flag VARCHAR(10) DEFAULT '🇺🇸',
+        recurrence VARCHAR(50) DEFAULT 'none',
+        recurrence_text VARCHAR(200),
+        recurrence_days JSONB DEFAULT '[]'::jsonb,
+        recurrence_end VARCHAR(100),
         status VARCHAR(50) DEFAULT 'upcoming',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      ALTER TABLE meetings ADD COLUMN IF NOT EXISTS recurrence VARCHAR(50) DEFAULT 'none';
+      ALTER TABLE meetings ADD COLUMN IF NOT EXISTS recurrence_text VARCHAR(200);
+      ALTER TABLE meetings ADD COLUMN IF NOT EXISTS recurrence_days JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE meetings ADD COLUMN IF NOT EXISTS recurrence_end VARCHAR(100);
     `);
 
     // 4. Contacts Table
@@ -282,8 +299,25 @@ export async function initDb(): Promise<void> {
         group_name VARCHAR(255),
         participants_count INTEGER DEFAULT 2,
         active_participants JSONB DEFAULT '[]'::jsonb,
+        is_screen_sharing BOOLEAN DEFAULT false,
+        screen_sharer_name VARCHAR(255),
+        screen_sharer_username VARCHAR(255),
+        screen_sharer_avatar TEXT,
+        screen_share_content_type VARCHAR(100) DEFAULT 'screen',
+        screen_share_title VARCHAR(255),
+        screen_share_frame TEXT,
+        screen_share_started_at TIMESTAMP WITH TIME ZONE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS is_screen_sharing BOOLEAN DEFAULT false;
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_sharer_name VARCHAR(255);
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_sharer_username VARCHAR(255);
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_sharer_avatar TEXT;
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_share_content_type VARCHAR(100) DEFAULT 'screen';
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_share_title VARCHAR(255);
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_share_frame TEXT;
+      ALTER TABLE call_sessions ADD COLUMN IF NOT EXISTS screen_share_started_at TIMESTAMP WITH TIME ZONE;
     `);
 
     // 9b. Ephemeral In-Call Chat Messages (Visible strictly during active call session)

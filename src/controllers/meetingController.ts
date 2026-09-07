@@ -24,6 +24,10 @@ export interface MeetingDbRow {
   reminder_10min: boolean;
   speak_language: string;
   speak_language_flag: string;
+  recurrence?: string;
+  recurrence_text?: string | null;
+  recurrence_days?: any;
+  recurrence_end?: string | null;
   status: string;
   created_at: Date;
   updated_at: Date;
@@ -39,6 +43,17 @@ const mapMeetingRowToDto = (row: MeetingDbRow, currentUserId?: string | null, cu
     }
   } else if (Array.isArray(row.participants)) {
     parsedParticipants = row.participants;
+  }
+
+  let parsedRecurrenceDays: string[] = [];
+  if (typeof row.recurrence_days === "string") {
+    try {
+      parsedRecurrenceDays = JSON.parse(row.recurrence_days);
+    } catch {
+      parsedRecurrenceDays = [];
+    }
+  } else if (Array.isArray(row.recurrence_days)) {
+    parsedRecurrenceDays = row.recurrence_days;
   }
 
   const isHost = Boolean(
@@ -66,6 +81,10 @@ const mapMeetingRowToDto = (row: MeetingDbRow, currentUserId?: string | null, cu
     reminder10Min: row.reminder_10min,
     speakLanguage: row.speak_language,
     speakLanguageFlag: row.speak_language_flag,
+    recurrence: row.recurrence || "none",
+    recurrenceText: row.recurrence_text || null,
+    recurrenceDays: parsedRecurrenceDays,
+    recurrenceEnd: row.recurrence_end || null,
     status: row.status,
     createdAt: row.created_at,
   };
@@ -153,6 +172,10 @@ export const meetingController = {
         speakLanguage = preferredLanguage.language,
         speakLanguageFlag = preferredLanguage.flag,
         hostEmail,
+        recurrence = "none",
+        recurrenceText = null,
+        recurrenceDays = [],
+        recurrenceEnd = null,
       } = req.body;
       const requestUser = (req as any).user;
       const resolvedHostEmail =
@@ -188,9 +211,11 @@ export const meetingController = {
           host_id, title, meeting_type, meeting_date, start_time, end_time, timezone, 
           duration, shareable_link, participants, dubbing_enabled, is_host, 
           mute_all_allowed, allow_unmute, waiting_room_enabled, reminder_10min, 
-          speak_language, speak_language_flag, status, host_email
+          speak_language, speak_language_flag, status, host_email,
+          recurrence, recurrence_text, recurrence_days, recurrence_end
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'upcoming', $19
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, 'upcoming', $19,
+          $20, $21, $22, $23
         ) RETURNING *`,
         [
           resolvedHostId,
@@ -212,6 +237,10 @@ export const meetingController = {
           speakLanguage,
           speakLanguageFlag,
           resolvedHostEmail,
+          recurrence || "none",
+          recurrenceText || null,
+          JSON.stringify(Array.isArray(recurrenceDays) ? recurrenceDays : []),
+          recurrenceEnd || null,
         ]
       );
 

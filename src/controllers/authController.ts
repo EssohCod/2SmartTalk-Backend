@@ -4,6 +4,7 @@ import { query } from "../config/db";
 import { otpService } from "../services/otpService";
 import { tokenService } from "../services/tokenService";
 import { emailService } from "../services/emailService";
+import { resolveCountryAndTimezone } from "../utils/countryTimezoneMap";
 
 export interface UserDbRow {
   id: string;
@@ -17,6 +18,8 @@ export interface UserDbRow {
   native_language: string;
   native_language_code: string | null;
   native_language_flag: string;
+  timezone?: string | null;
+  country?: string | null;
   live_translation_enabled: boolean | null;
   is_email_verified: boolean;
   avatar_url: string | null;
@@ -40,7 +43,19 @@ export const authController = {
         nativeLanguage = "English (US)",
         nativeLanguageCode = "en-US",
         nativeLanguageFlag = "🇺🇸",
+        timezone,
+        country,
       } = req.body;
+
+      // Automatically import country's timezone from chosen country/language
+      const geo = resolveCountryAndTimezone({
+        country,
+        language: nativeLanguage,
+        flag: nativeLanguageFlag,
+        code: nativeLanguageCode,
+      });
+      const resolvedTimezone = timezone || geo.timezone;
+      const resolvedCountry = country || geo.country;
 
       const cleanEmail = email.toLowerCase().trim();
       const cleanUsername = username.toLowerCase().trim().replace(/[^a-z0-9_.]/g, "");
@@ -93,13 +108,14 @@ export const authController = {
       const salt = await bcrypt.genSalt(10);
       const passwordHash = await bcrypt.hash(password, salt);
 
-      // Insert new user into DB
+      // Insert new user into DB with timezone and country
       const insertResult = await query<UserDbRow>(
         `INSERT INTO users (
           first_name, last_name, name, username, email, password_hash, 
-          gender, native_language, native_language_code, native_language_flag, is_email_verified
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false)
-        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_flag, is_email_verified, created_at`,
+          gender, native_language, native_language_code, native_language_flag, 
+          timezone, country, is_email_verified
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, false)
+        RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, timezone, country, is_email_verified, created_at`,
         [
           firstName.trim(),
           lastName.trim(),
@@ -111,6 +127,8 @@ export const authController = {
           nativeLanguage,
           nativeLanguageCode,
           nativeLanguageFlag,
+          resolvedTimezone,
+          resolvedCountry,
         ]
       );
 
@@ -130,6 +148,8 @@ export const authController = {
           username: createdUser.username,
           email: createdUser.email,
           gender: createdUser.gender,
+          timezone: createdUser.timezone,
+          country: createdUser.country,
           nativeLanguage: createdUser.native_language,
           nativeLanguageCode: createdUser.native_language_code,
           nativeLanguageFlag: createdUser.native_language_flag,
@@ -168,7 +188,7 @@ export const authController = {
              last_device_id = COALESCE($2, last_device_id),
              updated_at = NOW()
          WHERE LOWER(email) = $1 
-         RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, avatar_url, is_email_verified, live_translation_enabled`,
+         RETURNING id, first_name, last_name, name, username, email, gender, native_language, native_language_code, native_language_flag, timezone, country, avatar_url, is_email_verified, live_translation_enabled`,
         [cleanEmail, deviceId || null]
       );
 
@@ -178,6 +198,16 @@ export const authController = {
       }
 
       const user = updateResult.rows[0];
+
+      // Auto-resolve timezone & country if not already set
+      const geo = resolveCountryAndTimezone({
+        country: user.country,
+        language: user.native_language,
+        flag: user.native_language_flag,
+        code: user.native_language_code,
+      });
+      const userTz = user.timezone || geo.timezone;
+      const userCountry = user.country || geo.country;
 
       // 1. Send Welcome Email to the user asynchronously
       emailService.sendWelcomeEmail(
@@ -229,6 +259,8 @@ export const authController = {
           username: user.username,
           email: user.email,
           gender: user.gender,
+          timezone: userTz,
+          country: userCountry,
           nativeLanguage: user.native_language,
           nativeLanguageCode: user.native_language_code || "en-US",
           nativeLanguageFlag: user.native_language_flag,
@@ -362,6 +394,16 @@ export const authController = {
       const token = tokenService.generateAccessToken(tokenPayload);
       const refreshToken = tokenService.generateRefreshToken(tokenPayload);
 
+      // Auto-resolve timezone & country if not already stored
+      const geo = resolveCountryAndTimezone({
+        country: user.country,
+        language: user.native_language,
+        flag: user.native_language_flag,
+        code: user.native_language_code,
+      });
+      const userTz = user.timezone || geo.timezone;
+      const userCountry = user.country || geo.country;
+
       res.status(200).json({
         success: true,
         message: "Signed in successfully!",
@@ -375,6 +417,8 @@ export const authController = {
           username: user.username,
           email: user.email,
           gender: user.gender,
+          timezone: userTz,
+          country: userCountry,
           nativeLanguage: user.native_language,
           nativeLanguageCode: user.native_language_code || "en-US",
           nativeLanguageFlag: user.native_language_flag,

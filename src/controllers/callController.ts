@@ -507,7 +507,10 @@ export const callController = {
       }
 
       const result = await pool.query(
-        "SELECT id, status, room_id, is_group, participants_count, started_at, connected_at, ended_at, duration_seconds FROM call_sessions WHERE id = $1",
+        `SELECT id, status, room_id, is_group, participants_count, started_at, connected_at, ended_at, duration_seconds,
+                is_screen_sharing, screen_sharer_name, screen_sharer_username, screen_sharer_avatar,
+                screen_share_content_type, screen_share_title, screen_share_frame, screen_share_started_at
+         FROM call_sessions WHERE id = $1`,
         [sessionId]
       );
 
@@ -543,6 +546,14 @@ export const callController = {
           connectedAt: row.connected_at,
           endedAt: row.ended_at,
           durationSeconds: row.duration_seconds,
+          isScreenSharing: Boolean(row.is_screen_sharing),
+          screenSharerName: row.screen_sharer_name || null,
+          screenSharerUsername: row.screen_sharer_username || null,
+          screenSharerAvatar: row.screen_sharer_avatar || null,
+          screenShareContentType: row.screen_share_content_type || "screen",
+          screenShareTitle: row.screen_share_title || null,
+          screenShareFrame: row.screen_share_frame || null,
+          screenShareStartedAt: row.screen_share_started_at || null,
         },
       });
     } catch (error: any) {
@@ -855,8 +866,12 @@ export const callController = {
       const params: any[] = [userId];
 
       if (direction && typeof direction === "string" && direction !== "all") {
-        params.push(direction.toLowerCase());
-        query += ` AND LOWER(call_direction) = $${params.length}`;
+        if (direction.toLowerCase() === "missed") {
+          query += ` AND (LOWER(call_direction) = 'missed' OR LOWER(call_status) = 'missed')`;
+        } else {
+          params.push(direction.toLowerCase());
+          query += ` AND LOWER(call_direction) = $${params.length}`;
+        }
       }
 
       if (search && typeof search === "string" && search.trim()) {
@@ -977,6 +992,204 @@ export const callController = {
   },
 
   /**
+   * 10b. Start Screen Share in Call Session
+   * POST /api/calls/:sessionId/screen-share/start
+   */
+  async startScreenShare(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const {
+        sharerName = "Presenter",
+        sharerUsername = "@user",
+        sharerAvatar = null,
+        contentType = "screen", // 'screen' | 'presentation' | 'document' | 'window'
+        title = "Screen Sharing Presentation",
+        initialFrame = null,
+      } = req.body;
+
+      if (!sessionId || !isUuid(sessionId)) {
+        res.status(200).json({
+          success: true,
+          message: "Screen share active.",
+          screenShare: {
+            isScreenSharing: true,
+            screenSharerName: sharerName,
+            screenSharerUsername: sharerUsername,
+            screenSharerAvatar: sharerAvatar,
+            screenShareContentType: contentType,
+            screenShareTitle: title,
+            screenShareFrame: initialFrame,
+          },
+        });
+        return;
+      }
+
+      const result = await pool.query(
+        `UPDATE call_sessions
+         SET is_screen_sharing = true,
+             screen_sharer_name = $1,
+             screen_sharer_username = $2,
+             screen_sharer_avatar = $3,
+             screen_share_content_type = $4,
+             screen_share_title = $5,
+             screen_share_frame = $6,
+             screen_share_started_at = NOW()
+         WHERE id = $7
+         RETURNING *`,
+        [sharerName, sharerUsername, sharerAvatar, contentType, title, initialFrame, sessionId]
+      );
+
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: "Call session not found." });
+        return;
+      }
+
+      const row = result.rows[0];
+
+      res.status(200).json({
+        success: true,
+        message: "Screen sharing started.",
+        screenShare: {
+          isScreenSharing: true,
+          screenSharerName: row.screen_sharer_name,
+          screenSharerUsername: row.screen_sharer_username,
+          screenSharerAvatar: row.screen_sharer_avatar,
+          screenShareContentType: row.screen_share_content_type,
+          screenShareTitle: row.screen_share_title,
+          screenShareFrame: row.screen_share_frame,
+          screenShareStartedAt: row.screen_share_started_at,
+        },
+      });
+    } catch (error: any) {
+      console.error("CallController.startScreenShare error:", error);
+      res.status(500).json({ error: "Failed to start screen share." });
+    }
+  },
+
+  /**
+   * 10c. Stop Screen Share in Call Session
+   * POST /api/calls/:sessionId/screen-share/stop
+   */
+  async stopScreenShare(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+
+      if (!sessionId || !isUuid(sessionId)) {
+        res.status(200).json({
+          success: true,
+          message: "Screen share stopped.",
+        });
+        return;
+      }
+
+      await pool.query(
+        `UPDATE call_sessions
+         SET is_screen_sharing = false,
+             screen_sharer_name = NULL,
+             screen_sharer_username = NULL,
+             screen_sharer_avatar = NULL,
+             screen_share_frame = NULL,
+             screen_share_title = NULL,
+             screen_share_started_at = NULL
+         WHERE id = $1`,
+        [sessionId]
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Screen sharing stopped.",
+      });
+    } catch (error: any) {
+      console.error("CallController.stopScreenShare error:", error);
+      res.status(500).json({ error: "Failed to stop screen share." });
+    }
+  },
+
+  /**
+   * 10d. Get Screen Share State & Active Frame
+   * GET /api/calls/:sessionId/screen-share
+   */
+  async getScreenShare(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+
+      if (!sessionId || !isUuid(sessionId)) {
+        res.status(200).json({
+          success: true,
+          screenShare: {
+            isScreenSharing: false,
+          },
+        });
+        return;
+      }
+
+      const result = await pool.query(
+        `SELECT is_screen_sharing, screen_sharer_name, screen_sharer_username, screen_sharer_avatar,
+                screen_share_content_type, screen_share_title, screen_share_frame, screen_share_started_at
+         FROM call_sessions WHERE id = $1`,
+        [sessionId]
+      );
+
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: "Session not found." });
+        return;
+      }
+
+      const row = result.rows[0];
+
+      res.status(200).json({
+        success: true,
+        screenShare: {
+          isScreenSharing: Boolean(row.is_screen_sharing),
+          screenSharerName: row.screen_sharer_name,
+          screenSharerUsername: row.screen_sharer_username,
+          screenSharerAvatar: row.screen_sharer_avatar,
+          screenShareContentType: row.screen_share_content_type,
+          screenShareTitle: row.screen_share_title,
+          screenShareFrame: row.screen_share_frame,
+          screenShareStartedAt: row.screen_share_started_at,
+        },
+      });
+    } catch (error: any) {
+      console.error("CallController.getScreenShare error:", error);
+      res.status(500).json({ error: "Failed to get screen share state." });
+    }
+  },
+
+  /**
+   * 10e. Update Screen Share Frame / Slide
+   * POST /api/calls/:sessionId/screen-share/frame
+   */
+  async updateScreenShareFrame(req: Request, res: Response): Promise<void> {
+    try {
+      const sessionId = req.params.sessionId as string;
+      const { frame, title, contentType } = req.body;
+
+      if (!sessionId || !isUuid(sessionId)) {
+        res.status(200).json({ success: true });
+        return;
+      }
+
+      await pool.query(
+        `UPDATE call_sessions
+         SET screen_share_frame = $1,
+             screen_share_title = COALESCE($2, screen_share_title),
+             screen_share_content_type = COALESCE($3, screen_share_content_type)
+         WHERE id = $4 AND is_screen_sharing = true`,
+        [frame || null, title || null, contentType || null, sessionId]
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Frame updated successfully.",
+      });
+    } catch (error: any) {
+      console.error("CallController.updateScreenShareFrame error:", error);
+      res.status(500).json({ error: "Failed to update screen share frame." });
+    }
+  },
+
+  /**
    * 11. Clear All Calls
    */
   async clearCallHistory(req: Request, res: Response): Promise<void> {
@@ -1008,7 +1221,8 @@ function formatCallRows(rows: any[]) {
     if (isToday) dateGroup = "Today";
     else if (isYesterday) dateGroup = "Yesterday";
 
-    const typeKey = `${row.call_direction}_${row.call_type}`;
+    const isMissed = row.call_direction === "missed" || row.call_status === "missed";
+    const typeKey = isMissed ? `missed_${row.call_type}` : `${row.call_direction}_${row.call_type}`;
 
     return {
       id: row.id,

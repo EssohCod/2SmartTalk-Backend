@@ -169,6 +169,7 @@ export const chatController = {
           isGroup: row.type === "group",
           lastMessage: row.last_message || "Start conversation",
           time: row.last_message_time ? new Date(row.last_message_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
+          lastMessageTime: row.last_message_time || row.created_at,
           unreadCount,
           recipientLang,
           recipientLangFlag,
@@ -189,6 +190,7 @@ export const chatController = {
           isGroup: true,
           lastMessage: `Group chat active. Link: ${g.invite_link}`,
           time: new Date(g.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          lastMessageTime: g.created_at,
           unreadCount: 0,
           recipientLang: (g.languages && g.languages.length > 0) ? g.languages[0] : "English",
           recipientLangFlag: "🌐",
@@ -499,7 +501,7 @@ export const chatController = {
             audioUrl: resolvedAudioUrl,
             audioDuration: row.audio_duration || "0:02",
             mediaUrl: row.media_url,
-            timestamp: new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            timestamp: row.created_at,
             createdAt: row.created_at,
           };
         })
@@ -880,7 +882,7 @@ export const chatController = {
           audioUrl: msgRow.media_url || msgRow.audio_url,
           audioDuration: msgRow.audio_duration,
           mediaUrl: msgRow.media_url,
-          timestamp: new Date(msgRow.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          timestamp: msgRow.created_at,
           createdAt: msgRow.created_at,
         },
       });
