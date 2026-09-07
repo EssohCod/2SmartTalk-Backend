@@ -958,6 +958,65 @@ export const chatController = {
       res.status(500).json({ error: "Failed to mark conversation as read." });
     }
   },
+
+  /**
+   * 7. Delete Messages (single or batch)
+   * DELETE /api/chats/:id/messages
+   */
+  async deleteMessages(req: Request, res: Response): Promise<void> {
+    try {
+      const convId = req.params.id as string;
+      const { messageIds } = (req.body || {}) as { messageIds?: string[] };
+      const rawSingleId = req.params.messageId || req.query.messageId;
+      const singleId = typeof rawSingleId === "string" ? rawSingleId : undefined;
+
+      let idsToDelete: string[] = [];
+      if (Array.isArray(messageIds) && messageIds.length > 0) {
+        idsToDelete = messageIds.filter((id: any) => typeof id === "string" && isUuid(id));
+      } else if (singleId && isUuid(singleId)) {
+        idsToDelete = [singleId];
+      }
+
+      if (idsToDelete.length === 0) {
+        res.status(400).json({ error: "No valid message IDs provided to delete." });
+        return;
+      }
+
+      // Delete the messages
+      const deleteResult = await pool.query(
+        "DELETE FROM messages WHERE id = ANY($1::uuid[])",
+        [idsToDelete]
+      );
+
+      // Update parent conversation last_message and last_message_time to the latest remaining message
+      if (isUuid(convId)) {
+        const latestMsg = await pool.query(
+          "SELECT original_text, created_at FROM messages WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 1",
+          [convId]
+        );
+        if (latestMsg.rows.length > 0) {
+          await pool.query(
+            "UPDATE conversations SET last_message = $1, last_message_time = $2 WHERE id = $3",
+            [latestMsg.rows[0].original_text || "Message", latestMsg.rows[0].created_at, convId]
+          );
+        } else {
+          await pool.query(
+            "UPDATE conversations SET last_message = '', last_message_time = NOW() WHERE id = $1",
+            [convId]
+          );
+        }
+      }
+
+      res.status(200).json({
+        success: true,
+        message: `${deleteResult.rowCount || idsToDelete.length} message(s) deleted successfully.`,
+        deletedIds: idsToDelete,
+      });
+    } catch (error: any) {
+      console.error("ChatController.deleteMessages error:", error);
+      res.status(500).json({ error: "Failed to delete messages." });
+    }
+  },
 };
 
 export default chatController;

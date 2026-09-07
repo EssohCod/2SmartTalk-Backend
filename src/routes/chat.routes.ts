@@ -21,6 +21,12 @@ router.post("/:id/messages", chatController.sendMessage);
 // PATCH /api/chats/:id/read - Mark conversation as read (clear unread count)
 router.patch("/:id/read", chatController.markAsRead);
 
+// DELETE /api/chats/:id/messages - Delete messages (batch)
+router.delete("/:id/messages", chatController.deleteMessages);
+
+// DELETE /api/chats/:id/messages/:messageId - Delete single message
+router.delete("/:id/messages/:messageId", chatController.deleteMessages);
+
 // DELETE /api/chats/:id - Delete conversation
 router.delete("/:id", chatController.deleteConversation);
 
