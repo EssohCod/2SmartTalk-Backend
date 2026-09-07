@@ -29,7 +29,11 @@ export const contactController = {
       }
 
       const result = await pool.query(
-        "SELECT * FROM contacts WHERE user_id = $1 ORDER BY is_favorite DESC, name ASC",
+        `SELECT c.*, COALESCE(NULLIF(u.avatar_url, ''), c.avatar_url) AS dynamic_avatar_url
+         FROM contacts c
+         LEFT JOIN users u ON c.contact_user_id = u.id
+         WHERE c.user_id = $1
+         ORDER BY c.is_favorite DESC, c.name ASC`,
         [userId]
       );
 
@@ -39,7 +43,7 @@ export const contactController = {
         username: row.username.startsWith("@") ? row.username : `@${row.username}`,
         email: row.email || "",
         phone: row.phone || "",
-        avatarUrl: row.avatar_url,
+        avatarUrl: row.dynamic_avatar_url || row.avatar_url,
         language: row.native_language || "English",
         flag: row.native_language_flag || "🇺🇸",
         location: row.location || "Global",
