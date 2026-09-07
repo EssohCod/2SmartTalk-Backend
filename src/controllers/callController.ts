@@ -939,7 +939,10 @@ export const callController = {
       let query = `
         SELECT c.*, COALESCE(NULLIF(u.avatar_url, ''), c.contact_avatar) AS dynamic_avatar_url
         FROM calls c
-        LEFT JOIN users u ON LOWER(TRIM(u.name)) = LOWER(TRIM(c.contact_name))
+        LEFT JOIN users u ON (
+          LOWER(TRIM(u.name)) = LOWER(TRIM(c.contact_name))
+          OR LOWER(TRIM(REPLACE(u.username, '@', ''))) = LOWER(TRIM(REPLACE(c.contact_username, '@', '')))
+        )
         WHERE c.user_id = $1
       `;
       const params: any[] = [userId];

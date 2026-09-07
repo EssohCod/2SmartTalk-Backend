@@ -31,7 +31,11 @@ export const contactController = {
       const result = await pool.query(
         `SELECT c.*, COALESCE(NULLIF(u.avatar_url, ''), c.avatar_url) AS dynamic_avatar_url
          FROM contacts c
-         LEFT JOIN users u ON c.contact_user_id = u.id
+         LEFT JOIN users u ON (
+           c.contact_user_id = u.id 
+           OR LOWER(TRIM(u.name)) = LOWER(TRIM(c.name)) 
+           OR LOWER(TRIM(REPLACE(u.username, '@', ''))) = LOWER(TRIM(REPLACE(c.username, '@', '')))
+         )
          WHERE c.user_id = $1
          ORDER BY c.is_favorite DESC, c.name ASC`,
         [userId]
