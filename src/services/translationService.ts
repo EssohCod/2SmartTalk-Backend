@@ -354,7 +354,12 @@ export interface TranslationResult {
 export function toGenesiaLanguageCode(isoCode: string): string {
   if (!isoCode || isoCode === "auto") return "eng";
 
-  const code = isoCode.split("-")[0].toLowerCase();
+  const raw = (isoCode || "").trim().toLowerCase();
+  // Check if it matches a full language name or standard code
+  const supportedInfo = SUPPORTED_LANGUAGES.find(
+    (l) => l.name.toLowerCase() === raw || l.code.toLowerCase() === raw || l.code.split("-")[0].toLowerCase() === raw
+  );
+  const code = supportedInfo ? supportedInfo.code.split("-")[0].toLowerCase() : raw.split("-")[0].toLowerCase();
 
   const map: { [key: string]: string } = {
     af: "afr",
@@ -599,9 +604,9 @@ export async function translateSpeechWithGenesia(
 ): Promise<{ audio_url: string; transcription: string; translation: string } | null> {
   const genesiaUrls = [
     process.env.GENESIA_API_URL,
+    "https://upset-webs-behave.loca.lt",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
-    "https://genesia-translation-api-five.vercel.app",
   ].filter(Boolean) as string[];
 
   const genesiaSource = toGenesiaLanguageCode(sourceLang);
@@ -618,10 +623,13 @@ export async function translateSpeechWithGenesia(
       formData.append("preserve_voice", String(preserveVoice));
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
 
       const response = await fetch(endpoint, {
         method: "POST",
+        headers: {
+          "Bypass-Tunnel-Reminder": "true",
+        },
         body: formData,
         signal: controller.signal,
       });
@@ -633,7 +641,9 @@ export async function translateSpeechWithGenesia(
         // Convert audio to portable base64 data URI so mobile devices have zero network/localhost routing hurdles
         if (finalAudioUrl && finalAudioUrl.startsWith("http")) {
           try {
-            const audioFetch = await fetch(finalAudioUrl);
+            const audioFetch = await fetch(finalAudioUrl, {
+              headers: { "Bypass-Tunnel-Reminder": "true" },
+            });
             if (audioFetch.ok) {
               const ab = await audioFetch.arrayBuffer();
               const b64 = Buffer.from(ab).toString("base64");
