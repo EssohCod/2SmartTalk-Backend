@@ -936,24 +936,29 @@ export const callController = {
         return;
       }
 
-      let query = "SELECT * FROM calls WHERE user_id = $1";
+      let query = `
+        SELECT c.*, COALESCE(NULLIF(u.avatar_url, ''), c.contact_avatar) AS dynamic_avatar_url
+        FROM calls c
+        LEFT JOIN users u ON LOWER(TRIM(u.name)) = LOWER(TRIM(c.contact_name))
+        WHERE c.user_id = $1
+      `;
       const params: any[] = [userId];
 
       if (direction && typeof direction === "string" && direction !== "all") {
         if (direction.toLowerCase() === "missed") {
-          query += ` AND (LOWER(call_direction) = 'missed' OR LOWER(call_status) = 'missed')`;
+          query += ` AND (LOWER(c.call_direction) = 'missed' OR LOWER(c.call_status) = 'missed')`;
         } else {
           params.push(direction.toLowerCase());
-          query += ` AND LOWER(call_direction) = $${params.length}`;
+          query += ` AND LOWER(c.call_direction) = $${params.length}`;
         }
       }
 
       if (search && typeof search === "string" && search.trim()) {
         params.push(`%${search.trim().toLowerCase()}%`);
-        query += ` AND (LOWER(contact_name) LIKE $${params.length} OR LOWER(contact_username) LIKE $${params.length} OR LOWER(contact_language) LIKE $${params.length})`;
+        query += ` AND (LOWER(c.contact_name) LIKE $${params.length} OR LOWER(c.contact_username) LIKE $${params.length} OR LOWER(c.contact_language) LIKE $${params.length})`;
       }
 
-      query += " ORDER BY started_at DESC";
+      query += " ORDER BY c.started_at DESC";
 
       const result = await pool.query(query, params);
       const formatted = formatCallRows(result.rows);
@@ -1302,7 +1307,7 @@ function formatCallRows(rows: any[]) {
       id: row.id,
       name: row.contact_name,
       username: row.contact_username || `@${row.contact_name.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
-      avatarUrl: row.contact_avatar,
+      avatarUrl: row.dynamic_avatar_url || row.contact_avatar,
       isGroup: row.is_group || false,
       isOnline: true,
       type: typeKey,
