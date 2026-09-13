@@ -29,10 +29,16 @@ export const contactController = {
       }
 
       const result = await pool.query(
-        `SELECT c.*, COALESCE(NULLIF(u.avatar_url, ''), c.avatar_url) AS dynamic_avatar_url
+        `SELECT c.*, 
+                COALESCE(NULLIF(u.avatar_url, ''), c.avatar_url) AS dynamic_avatar_url,
+                CASE
+                  WHEN u.id IS NOT NULL THEN (u.presence_status = 'online' AND u.last_active_at >= NOW() - INTERVAL '45 seconds')
+                  ELSE (c.is_online = true AND c.presence_status = 'online' AND c.last_active_at >= NOW() - INTERVAL '45 seconds')
+                END AS real_is_online
          FROM contacts c
          LEFT JOIN users u ON (
            c.contact_user_id = u.id 
+           OR (c.email IS NOT NULL AND c.email != '' AND LOWER(TRIM(u.email)) = LOWER(TRIM(c.email)))
            OR LOWER(TRIM(u.name)) = LOWER(TRIM(c.name)) 
            OR LOWER(TRIM(REPLACE(u.username, '@', ''))) = LOWER(TRIM(REPLACE(c.username, '@', '')))
          )
@@ -51,7 +57,7 @@ export const contactController = {
         language: row.native_language || "English",
         flag: row.native_language_flag || "🇺🇸",
         location: row.location || "Global",
-        isOnline: Boolean(row.is_online),
+        isOnline: Boolean(row.real_is_online),
         isFavorite: Boolean(row.is_favorite),
         bio: row.bio || "",
         sectionLetter: (row.name || "A")[0].toUpperCase(),
@@ -228,7 +234,7 @@ export const contactController = {
           resolvedLang,
           resolvedFlag,
           resolvedLoc,
-          true,
+          false,
           false,
           resolvedBio,
         ]
@@ -434,7 +440,8 @@ export const contactController = {
 
       const result = await pool.query(
         `SELECT u.id, u.name, u.username, u.email, u.avatar_url, u.native_language, u.native_language_flag, u.bio,
-               EXISTS(
+                u.presence_status, u.last_active_at,
+                EXISTS(
                  SELECT 1 FROM contacts c
                  WHERE c.user_id = $1
                    AND (c.contact_user_id = u.id OR LOWER(c.username) = LOWER('@' || u.username))
@@ -469,7 +476,7 @@ export const contactController = {
          flag: u.native_language_flag || "🇺🇸",
          bio: u.bio || "2SmartTalk member",
          isAdded: Boolean(u.is_added),
-         isOnline: true,
+         isOnline: Boolean(u.presence_status === "online" && u.last_active_at && (new Date().getTime() - new Date(u.last_active_at).getTime() < 45000)),
         })),
       });
     } catch (error: any) {
@@ -515,6 +522,7 @@ export const contactController = {
 
       let query = `
         SELECT u.id, u.name, u.username, u.email, u.avatar_url, u.native_language, u.native_language_flag, u.bio,
+               u.presence_status, u.last_active_at,
                (LOWER(u.native_language) = LOWER($1)) as is_same_language
         FROM users u
       `;
@@ -552,7 +560,7 @@ export const contactController = {
         isSameLanguage: Boolean(u.is_same_language),
         mutualCount: u.is_same_language ? 5 : 3,
         bio: u.bio || `Speaks ${u.native_language || "English"} • 2SmartTalk verified`,
-        isOnline: true,
+        isOnline: Boolean(u.presence_status === "online" && u.last_active_at && (new Date().getTime() - new Date(u.last_active_at).getTime() < 45000)),
       }));
 
       res.status(200).json({

@@ -325,6 +325,19 @@ export function getLanguageInfo(lang?: string): LanguageInfo {
 // In-Memory Translation Cache (LRU-style capped map)
 const translationCache = new Map<string, { translatedText: string; engine: string }>();
 const MAX_CACHE_SIZE = 5000;
+const DEFAULT_GENESIA_API_URL = "https://genesia-translation-api-five.vercel.app";
+
+function getGenesiaApiBaseUrls(): string[] {
+  const urls = [
+    process.env.GENESIA_API_URL,
+    DEFAULT_GENESIA_API_URL,
+    "https://upset-webs-behave.loca.lt",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+  ].filter(Boolean) as string[];
+
+  return Array.from(new Set(urls.map((url) => url.replace(/\/+$/, ""))));
+}
 
 function getCacheKey(text: string, source: string, target: string): string {
   return `${source}:${target}:${text.trim()}`;
@@ -365,7 +378,7 @@ export function toGenesiaLanguageCode(isoCode: string): string {
     af: "afr",
     sq: "sqi",
     am: "amh",
-    ar: "ara",
+    ar: "arb",
     hy: "hye",
     as: "asm",
     ay: "aym",
@@ -380,7 +393,7 @@ export function toGenesiaLanguageCode(isoCode: string): string {
     ca: "cat",
     ceb: "ceb",
     ny: "nya",
-    zh: "zho",
+    zh: "cmn",
     co: "cos",
     hr: "hrv",
     cs: "ces",
@@ -473,7 +486,7 @@ export function toGenesiaLanguageCode(isoCode: string): string {
     so: "som",
     es: "spa",
     su: "sun",
-    sw: "swa",
+    sw: "swh",
     sv: "swe",
     tg: "tgk",
     ta: "tam",
@@ -510,23 +523,28 @@ async function translateWithGenesia(
   sourceLang?: string
 ): Promise<string | null> {
   try {
-    const target = toGenesiaLanguageCode(targetLang);
-    const source = sourceLang ? toGenesiaLanguageCode(sourceLang) : "eng";
+    const target = normalizeLanguageCode(targetLang);
+    const source = sourceLang ? normalizeLanguageCode(sourceLang) : "en";
 
-    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/translation", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        target_language: target,
-        source_language: source,
-      }),
-    });
+    for (const baseUrl of getGenesiaApiBaseUrls()) {
+      const response = await fetch(`${baseUrl}/api/v1/translation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text,
+          target_language: target,
+          source_language: source,
+        }),
+      });
 
-    if (response.ok) {
-      const data: any = await response.json();
-      return data.translated_text || data.translation || null;
+      if (response.ok) {
+        const data: any = await response.json();
+        return data.translated_text || data.text || data.translation || null;
+      }
+
+      console.warn(`[Genesia Translation] HTTP ${response.status} from ${baseUrl}`);
     }
+
     return null;
   } catch (error) {
     console.warn("[Genesia Translation] API error:", error);
@@ -548,7 +566,7 @@ export async function transcribeAudioWithGenesia(
     formData.append("audio", blob, "audio.wav");
     formData.append("language", genesiaLang);
 
-    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/speech/transcribe", {
+    const response = await fetch(`${DEFAULT_GENESIA_API_URL}/api/v1/speech/transcribe`, {
       method: "POST",
       body: formData,
     });
@@ -577,7 +595,7 @@ export async function synthesizeSpeechWithGenesia(
     formData.append("text", text);
     formData.append("language", genesiaLang);
 
-    const response = await fetch("https://genesia-translation-api-five.vercel.app/api/v1/speech/synthesize", {
+    const response = await fetch(`${DEFAULT_GENESIA_API_URL}/api/v1/speech/synthesize`, {
       method: "POST",
       body: formData,
     });
@@ -602,19 +620,14 @@ export async function translateSpeechWithGenesia(
   targetLang: string = "es",
   preserveVoice: boolean = true
 ): Promise<{ audio_url: string; transcription: string; translation: string } | null> {
-  const genesiaUrls = [
-    process.env.GENESIA_API_URL,
-    "https://upset-webs-behave.loca.lt",
-    "http://127.0.0.1:8000",
-    "http://localhost:8000",
-  ].filter(Boolean) as string[];
+  const genesiaUrls = getGenesiaApiBaseUrls();
 
   const genesiaSource = toGenesiaLanguageCode(sourceLang);
   const genesiaTarget = toGenesiaLanguageCode(targetLang);
 
   for (const baseUrl of genesiaUrls) {
     try {
-      const endpoint = `${baseUrl.replace(/\/+$/, "")}/api/v1/speech/translate`;
+      const endpoint = `${baseUrl}/api/v1/speech/translate`;
       const formData = new FormData();
       const blob = new Blob([audioBuffer], { type: "audio/wav" });
       formData.append("audio", blob, "audio.wav");

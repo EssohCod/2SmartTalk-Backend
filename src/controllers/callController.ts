@@ -3,6 +3,11 @@ import { pool } from "../config/db";
 import { resolvePreferredLanguage, translationService, normalizeLanguageCode } from "../services/translationService";
 import { sendExpoPushNotification } from "./notificationController";
 
+function decodeAudioPayload(audioBase64: string): Buffer {
+  const cleanBase64 = audioBase64.replace(/^data:audio\/[^;]+;base64,/, "");
+  return Buffer.from(cleanBase64, "base64");
+}
+
 function isUuid(str: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
 }
@@ -588,7 +593,7 @@ export const callController = {
       if (audioBase64) {
         // Genesia Speech-to-Speech Integration
         try {
-          const audioBuffer = Buffer.from(audioBase64, "base64");
+          const audioBuffer = decodeAudioPayload(audioBase64);
           const s2sResult = await translationService.translateSpeech(
             audioBuffer,
             sourceLanguage,

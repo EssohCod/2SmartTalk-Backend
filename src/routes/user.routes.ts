@@ -9,6 +9,10 @@ router.get("/profile", userController.getProfile);
 // Get real-time dashboard statistics
 router.get("/stats", userController.getDashboardStats);
 
+// Online / offline presence heartbeat
+router.post("/presence", userController.updatePresence);
+router.patch("/presence", userController.updatePresence);
+
 // 2. Update personal information
 router.put("/profile", userController.updateProfile);
 router.patch("/profile", userController.updateProfile);

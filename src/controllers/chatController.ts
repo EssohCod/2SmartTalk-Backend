@@ -18,11 +18,11 @@ async function getCachedUser(userId: string) {
   }
   try {
     const res = await pool.query(
-      "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id = $1 LIMIT 1",
+      "SELECT id, name, avatar_url, native_language, native_language_flag, presence_status, last_active_at FROM users WHERE id = $1 LIMIT 1",
       [userId]
     );
     const user = res.rows[0] || null;
-    userProfileCache.set(userId, { user, expiresAt: now + 60000 });
+    userProfileCache.set(userId, { user, expiresAt: now + 15000 });
     return user;
   } catch {
     return null;
@@ -72,6 +72,7 @@ export const chatController = {
         let recipientLangFlag = row.recipient_lang_flag || "🇺🇸";
 
         // Direct-chat partner & language resolution relative to viewer
+        let partnerUser: any = null;
         if (row.type === "direct") {
           let partnerFound = false;
 
@@ -91,6 +92,7 @@ export const chatController = {
               displayAvatar = partUser.avatar_url || displayAvatar;
               recipientLang = partUser.native_language || recipientLang;
               recipientLangFlag = partUser.native_language_flag || recipientLangFlag;
+              partnerUser = partUser;
               partnerFound = true;
             }
           }
@@ -112,6 +114,7 @@ export const chatController = {
                 displayAvatar = uRes.avatar_url || displayAvatar;
                 recipientLang = uRes.native_language || recipientLang;
                 recipientLangFlag = uRes.native_language_flag || recipientLangFlag;
+                partnerUser = uRes;
                 partnerFound = true;
               } else {
                 displayName = msgSender.rows[0].sender_name;
@@ -126,7 +129,8 @@ export const chatController = {
           // 3. Check contacts table
           if (!partnerFound && userId) {
             const cRes = await pool.query(
-              `SELECT c.*, u.name as u_name, u.avatar_url as u_avatar, u.native_language as u_lang, u.native_language_flag as u_flag
+              `SELECT c.*, u.name as u_name, u.avatar_url as u_avatar, u.native_language as u_lang, u.native_language_flag as u_flag,
+                      u.presence_status, u.last_active_at
                FROM contacts c
                LEFT JOIN users u ON u.id = c.contact_user_id
                WHERE c.user_id::text = $1
@@ -138,6 +142,7 @@ export const chatController = {
               displayAvatar = cRes.rows[0].u_avatar || cRes.rows[0].avatar_url || displayAvatar;
               recipientLang = cRes.rows[0].u_lang || recipientLang;
               recipientLangFlag = cRes.rows[0].u_flag || recipientLangFlag;
+              partnerUser = cRes.rows[0];
               partnerFound = true;
             }
           }
@@ -145,7 +150,7 @@ export const chatController = {
           // 4. Fallback if displayName matches current viewer's name
           if (user?.name && displayName.toLowerCase().trim() === user.name.toLowerCase().trim()) {
             const otherUser = await pool.query(
-              "SELECT id, name, avatar_url, native_language, native_language_flag FROM users WHERE id::text != $1 LIMIT 1",
+              "SELECT id, name, avatar_url, native_language, native_language_flag, presence_status, last_active_at FROM users WHERE id::text != $1 LIMIT 1",
               [userId || "00000000-0000-0000-0000-000000000000"]
             );
             if (otherUser.rows.length > 0) {
@@ -153,6 +158,7 @@ export const chatController = {
               displayAvatar = otherUser.rows[0].avatar_url || displayAvatar;
               recipientLang = otherUser.rows[0].native_language || recipientLang;
               recipientLangFlag = otherUser.rows[0].native_language_flag || recipientLangFlag;
+              partnerUser = otherUser.rows[0];
             }
           }
         }
@@ -160,6 +166,13 @@ export const chatController = {
         // 🛡️ FIX: Hide unread badge if the current user is the one who sent the last message
         const isMeTheSender = (userId && row.last_sender_id === userId);
         const unreadCount = isMeTheSender ? 0 : (row.unread_count || 0);
+        const isPartnerOnline = row.type === "direct" && partnerUser
+          ? Boolean(
+              partnerUser.presence_status === "online" &&
+              partnerUser.last_active_at &&
+              (new Date().getTime() - new Date(partnerUser.last_active_at).getTime() < 45000)
+            )
+          : false;
 
         return {
           id: row.id,
@@ -167,6 +180,7 @@ export const chatController = {
           avatarUrl: displayAvatar,
           category: row.type,
           isGroup: row.type === "group",
+          isOnline: isPartnerOnline,
           lastMessage: row.last_message || "Start conversation",
           time: row.last_message_time ? new Date(row.last_message_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Just now",
           lastMessageTime: row.last_message_time || row.created_at,

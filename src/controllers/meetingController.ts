@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { query } from "../config/db";
-import { resolvePreferredLanguage } from "../services/translationService";
+import { normalizeLanguageCode, resolvePreferredLanguage, translationService } from "../services/translationService";
 import { sendExpoPushNotification } from "./notificationController";
 
 export interface MeetingDbRow {
@@ -89,6 +89,15 @@ const mapMeetingRowToDto = (row: MeetingDbRow, currentUserId?: string | null, cu
     createdAt: row.created_at,
   };
 };
+
+function isUuid(str: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+}
+
+function decodeAudioPayload(audioBase64: string): Buffer {
+  const cleanBase64 = audioBase64.replace(/^data:audio\/[^;]+;base64,/, "");
+  return Buffer.from(cleanBase64, "base64");
+}
 
 export const meetingController = {
   /**
@@ -371,7 +380,7 @@ export const meetingController = {
    */
   async acceptInvite(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id || "");
       const user = (req as any).user;
       const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.body?.userId as string);
       const userEmail = user?.email || (req.headers["x-user-email"] as string) || (req.body?.userEmail as string);
@@ -478,7 +487,7 @@ export const meetingController = {
    */
   async declineInvite(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
+      const id = String(req.params.id || "");
       const user = (req as any).user;
       const userId = user?.userId || user?.id || (req.headers["x-user-id"] as string) || (req.body?.userId as string);
       const userEmail = user?.email || (req.headers["x-user-email"] as string) || (req.body?.userEmail as string);
@@ -545,7 +554,110 @@ export const meetingController = {
   },
 
   /**
-   * 5. Delete / Cancel Meeting
+   * 5. Translate meeting audio/video speech into a participant's preferred language.
+   * POST /api/meetings/:id/translate-speech
+   */
+  async translateMeetingSpeech(req: Request, res: Response): Promise<void> {
+    try {
+      const preferredLanguage = await resolvePreferredLanguage(req);
+      const id = String(req.params.id || "");
+      const {
+        audioBase64,
+        text,
+        sourceLanguage,
+        targetLanguage = preferredLanguage.language,
+        preserveVoice = true,
+      } = req.body;
+
+      if (!id) {
+        res.status(400).json({ error: "Meeting ID is required." });
+        return;
+      }
+
+      if (!audioBase64 && (!text || typeof text !== "string" || !text.trim())) {
+        res.status(400).json({ error: "Audio data or transcript text is required." });
+        return;
+      }
+
+      let resolvedSourceLanguage = sourceLanguage || "auto";
+      let resolvedTargetLanguage = targetLanguage || preferredLanguage.language || "English";
+      let originalText = typeof text === "string" ? text.trim() : "";
+      let translatedText = originalText;
+      let audioUrl = "";
+
+      if (isUuid(id)) {
+        try {
+          const meetingResult = await query<MeetingDbRow>(
+            "SELECT speak_language, dubbing_enabled FROM meetings WHERE id = $1 LIMIT 1",
+            [id]
+          );
+          const meeting = meetingResult.rows[0];
+          if (meeting && meeting.dubbing_enabled === false) {
+            res.status(200).json({
+              success: true,
+              dubbingEnabled: false,
+              originalText,
+              translatedText,
+              sourceLanguage: resolvedSourceLanguage,
+              targetLanguage: resolvedTargetLanguage,
+              audioUrl,
+              audioBase64: audioUrl,
+            });
+            return;
+          }
+          resolvedSourceLanguage = sourceLanguage || meeting?.speak_language || resolvedSourceLanguage;
+        } catch (lookupErr) {
+          console.warn("Meeting speech language lookup warning:", lookupErr);
+        }
+      }
+
+      if (audioBase64) {
+        const audioBuffer = decodeAudioPayload(audioBase64);
+        if (audioBuffer.length > 100) {
+          const s2s = await translationService.translateSpeech(
+            audioBuffer,
+            resolvedSourceLanguage,
+            resolvedTargetLanguage,
+            preserveVoice !== false
+          );
+          if (s2s) {
+            originalText = s2s.transcription || originalText;
+            translatedText = s2s.translation || translatedText || originalText;
+            audioUrl = s2s.audio_url || "";
+          }
+        }
+      } else if (
+        originalText &&
+        normalizeLanguageCode(resolvedSourceLanguage) !== normalizeLanguageCode(resolvedTargetLanguage)
+      ) {
+        const translated = await translationService.translateText(
+          originalText,
+          resolvedTargetLanguage,
+          resolvedSourceLanguage
+        );
+        translatedText = translated.translatedText;
+        resolvedTargetLanguage = translated.targetLanguage;
+      }
+
+      res.status(200).json({
+        success: true,
+        dubbingEnabled: true,
+        originalText,
+        translatedText,
+        sourceLanguage: resolvedSourceLanguage,
+        targetLanguage: resolvedTargetLanguage,
+        audioUrl,
+        audioBase64: audioUrl,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("MeetingController.translateMeetingSpeech error:", error);
+      res.status(500).json({ error: "Failed to translate meeting speech." });
+    }
+  },
+
+  /**
+   * 6. Delete / Cancel Meeting
    */
   async deleteMeeting(req: Request, res: Response): Promise<void> {
     try {

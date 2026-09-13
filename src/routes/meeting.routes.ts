@@ -21,6 +21,9 @@ router.post("/:id/accept", meetingController.acceptInvite);
 // Decline meeting invitation
 router.post("/:id/decline", meetingController.declineInvite);
 
+// Translate live meeting audio/video speech for participant dubbing
+router.post("/:id/translate-speech", meetingController.translateMeetingSpeech);
+
 // Delete / cancel meeting
 router.delete("/:id", meetingController.deleteMeeting);
 

@@ -2,6 +2,11 @@ import { Request, Response } from "express";
 import { dubbingService } from "../services/dubbingService";
 import { translationService } from "../services/translationService";
 
+function decodeAudioPayload(audioBase64: string): Buffer {
+  const cleanBase64 = audioBase64.replace(/^data:audio\/[^;]+;base64,/, "");
+  return Buffer.from(cleanBase64, "base64");
+}
+
 export const dubbingController = {
   /**
    * 1. Text-to-Speech (TTS) Synthesis
@@ -83,7 +88,7 @@ export const dubbingController = {
         return;
       }
 
-      const audioBuffer = Buffer.from(audioBase64, "base64");
+      const audioBuffer = decodeAudioPayload(audioBase64);
       const result = await translationService.translateSpeech(
         audioBuffer,
         sourceLanguage,
@@ -119,7 +124,7 @@ export const dubbingController = {
         return;
       }
 
-      const audioBuffer = Buffer.from(audioBase64, "base64");
+      const audioBuffer = decodeAudioPayload(audioBase64);
       const transcription = await translationService.transcribeAudio(audioBuffer, languageCode);
 
       res.status(200).json({

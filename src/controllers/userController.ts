@@ -665,12 +665,23 @@ export const userController = {
         meetingsToday = parseInt(meetingsResult.rows[0]?.count || "0", 10);
       }
 
-      // 2. People Online count (ONLY the particular user's contacts that are online)
+      // 2. People Online count (ONLY the particular user's contacts that are online and active in last 45s)
       let peopleOnline = 0;
-      if (userId) {
+      if (userId || email) {
         const contactsOnline = await query(
-          `SELECT COUNT(*) as count FROM contacts WHERE user_id = $1 AND is_online = true`,
-          [userId]
+          `SELECT COUNT(*) as count 
+           FROM contacts c
+           LEFT JOIN users u ON (
+             c.contact_user_id = u.id 
+             OR (c.email IS NOT NULL AND c.email != '' AND LOWER(TRIM(u.email)) = LOWER(TRIM(c.email)))
+             OR (c.username IS NOT NULL AND c.username != '' AND LOWER(TRIM(REPLACE(u.username, '@', ''))) = LOWER(TRIM(REPLACE(c.username, '@', ''))))
+           )
+           WHERE (c.user_id::text = $1 OR c.user_id IN (SELECT id FROM users WHERE LOWER(email) = LOWER($2)))
+             AND (
+               (u.id IS NOT NULL AND u.presence_status = 'online' AND u.last_active_at >= NOW() - INTERVAL '45 seconds')
+               OR (u.id IS NULL AND c.is_online = true AND c.presence_status = 'online' AND c.last_active_at >= NOW() - INTERVAL '45 seconds')
+             )`,
+          [userId || "00000000-0000-0000-0000-000000000000", email || ""]
         );
         peopleOnline = parseInt(contactsOnline.rows[0]?.count || "0", 10);
       }
@@ -780,6 +791,52 @@ export const userController = {
     } catch (error: any) {
       console.error("UserController.deleteAccount error:", error);
       res.status(500).json({ error: "Failed to delete account. Please try again or contact support." });
+    }
+  },
+
+  /**
+   * 10. Update User Online / Offline Presence Status
+   */
+  async updatePresence(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId =
+        req.user?.userId ||
+        (req.headers["x-user-id"] as string) ||
+        (req.query.userId as string) ||
+        req.body?.userId;
+
+      const email =
+        req.user?.email ||
+        (req.headers["x-user-email"] as string) ||
+        (req.query.email as string) ||
+        req.body?.email;
+
+      const rawStatus = req.body?.status || req.query?.status || "online";
+      const status = rawStatus === "online" ? "online" : "offline";
+
+      if (userId || email) {
+        // Update user record
+        await query(
+          `UPDATE users 
+           SET presence_status = $1, last_active_at = NOW()
+           WHERE id::text = $2 OR (email IS NOT NULL AND LOWER(email) = LOWER($3))`,
+          [status, userId || "00000000-0000-0000-0000-000000000000", email || ""]
+        );
+
+        // Also update reciprocal contact entries where this user appears
+        await query(
+          `UPDATE contacts
+           SET is_online = $1, presence_status = $2, last_active_at = NOW()
+           WHERE contact_user_id::text = $3 
+              OR (email IS NOT NULL AND LOWER(email) = LOWER($4))`,
+          [status === "online", status, userId || "00000000-0000-0000-0000-000000000000", email || ""]
+        );
+      }
+
+      res.status(200).json({ success: true, status });
+    } catch (error: any) {
+      console.error("UserController.updatePresence error:", error);
+      res.status(200).json({ success: true, status: "offline" });
     }
   },
 
