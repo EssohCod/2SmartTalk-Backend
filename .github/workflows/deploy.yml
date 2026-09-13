@@ -1,0 +1,88 @@
+name: Deploy 2SmartTalk Backend
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build and Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Typecheck / Lint
+        run: npm run lint
+
+      - name: Build production bundle
+        run: npm run build
+
+  deploy:
+    name: Deploy to Server
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 1. Automatic Vercel Deployment (if VERCEL_TOKEN configured)
+      - name: Deploy to Vercel
+        if: env.VERCEL_TOKEN != ''
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: "--prod"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      # 2. Automatic Render Deployment (if RENDER_DEPLOY_HOOK_URL configured)
+      - name: Trigger Render Deploy Hook
+        if: env.RENDER_DEPLOY_HOOK_URL != ''
+        run: |
+          echo "Triggering Render auto-deploy..."
+          curl -s -X POST "$RENDER_DEPLOY_HOOK_URL"
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+      # 3. Automatic Generic Server / Webhook Deployment (if DEPLOY_WEBHOOK_URL configured)
+      - name: Trigger Server Webhook
+        if: env.DEPLOY_WEBHOOK_URL != ''
+        run: |
+          echo "Triggering server deployment webhook..."
+          curl -s -X POST "$DEPLOY_WEBHOOK_URL"
+        env:
+          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
+
+      # 4. Automatic SSH Deployment to VPS / Cloud VM (if SSH_HOST & SSH_KEY configured)
+      - name: Deploy via SSH
+        if: env.SSH_HOST != '' && env.SSH_KEY != ''
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER || 'root' }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            echo "Pulling latest changes on server..."
+            cd ${{ secrets.SERVER_APP_DIR || '/var/www/2smarttalk-backend' }}
+            git pull origin main
+            npm install --production=false
+            npm run build
+            pm2 restart 2smarttalk-backend || pm2 restart all || npm start
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}

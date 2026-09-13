@@ -325,13 +325,14 @@ export function getLanguageInfo(lang?: string): LanguageInfo {
 // In-Memory Translation Cache (LRU-style capped map)
 const translationCache = new Map<string, { translatedText: string; engine: string }>();
 const MAX_CACHE_SIZE = 5000;
-const DEFAULT_GENESIA_API_URL = "https://genesia-translation-api-five.vercel.app";
+const DEFAULT_GENESIA_API_URL = "https://api.genesia-translation.com";
 
 function getGenesiaApiBaseUrls(): string[] {
   const urls = [
     process.env.GENESIA_API_URL,
+    "https://api.genesia-translation.com",
     DEFAULT_GENESIA_API_URL,
-    "https://upset-webs-behave.loca.lt",
+    "https://genesia-translation-api-five.vercel.app",
     "http://127.0.0.1:8000",
     "http://localhost:8000",
   ].filter(Boolean) as string[];
