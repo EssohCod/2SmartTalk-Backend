@@ -942,12 +942,30 @@ export const callController = {
       }
 
       let query = `
-        SELECT c.*, COALESCE(NULLIF(u.avatar_url, ''), c.contact_avatar) AS dynamic_avatar_url
+        SELECT c.*,
+               COALESCE(NULLIF(u.avatar_url, ''), NULLIF(ct.avatar_url, ''), c.contact_avatar) AS dynamic_avatar_url,
+               CASE
+                 WHEN u.presence_status = 'online' AND u.last_active_at >= NOW() - INTERVAL '45 seconds' THEN true
+                 WHEN ct.is_online = true AND ct.presence_status = 'online' AND ct.last_active_at >= NOW() - INTERVAL '45 seconds' THEN true
+                 ELSE false
+               END AS real_is_online
         FROM calls c
-        LEFT JOIN users u ON (
-          LOWER(TRIM(u.name)) = LOWER(TRIM(c.contact_name))
-          OR LOWER(TRIM(REPLACE(u.username, '@', ''))) = LOWER(TRIM(REPLACE(c.contact_username, '@', '')))
-        )
+        LEFT JOIN LATERAL (
+          SELECT avatar_url, presence_status, last_active_at
+          FROM users
+          WHERE LOWER(TRIM(REPLACE(username, '@', ''))) = LOWER(TRIM(REPLACE(c.contact_username, '@', '')))
+             OR LOWER(TRIM(name)) = LOWER(TRIM(c.contact_name))
+          LIMIT 1
+        ) u ON true
+        LEFT JOIN LATERAL (
+          SELECT avatar_url, is_online, presence_status, last_active_at
+          FROM contacts
+          WHERE (c.user_id IS NOT NULL AND user_id = c.user_id) AND (
+            LOWER(TRIM(REPLACE(username, '@', ''))) = LOWER(TRIM(REPLACE(c.contact_username, '@', '')))
+            OR LOWER(TRIM(name)) = LOWER(TRIM(c.contact_name))
+          )
+          LIMIT 1
+        ) ct ON true
         WHERE c.user_id = $1
       `;
       const params: any[] = [userId];
@@ -1317,7 +1335,7 @@ function formatCallRows(rows: any[]) {
       username: row.contact_username || `@${row.contact_name.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
       avatarUrl: row.dynamic_avatar_url || row.contact_avatar,
       isGroup: row.is_group || false,
-      isOnline: true,
+      isOnline: Boolean(row.real_is_online),
       type: typeKey,
       callType: row.call_type,
       callDirection: row.call_direction,
